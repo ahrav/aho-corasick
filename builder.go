@@ -147,30 +147,59 @@ func (tb *TrieBuilder) Build() *Trie {
 
 	numStates := len(tb.states)
 
-	dict := make([]int64, numStates)
-	trans := make([][256]int64, numStates)
-	failLink := make([]int64, numStates)
-	dictLink := make([]int64, numStates)
-	pattern := make([]int64, numStates)
+	trie := &Trie{
+		trans:     make([][256]int64, numStates),
+		failTrans: make([][256]int64, numStates),
+		failLink:  make([]int64, numStates),
+		dictLink:  make([]int64, numStates),
+		dict:      make([]int64, numStates),
+		pattern:   make([]int64, numStates),
+	}
 
 	for i, s := range tb.states {
-		dict[i] = s.dict
-		pattern[i] = s.pattern
+		trie.dict[i] = s.dict
+		trie.pattern[i] = s.pattern
 		for c, t := range s.trans {
-			trans[i][c] = t.id
+			trie.trans[i][c] = t.id
 		}
 		if s.failLink != nil {
-			failLink[i] = s.failLink.id
+			trie.failLink[i] = s.failLink.id
 		}
 		if s.dictLink != nil {
-			dictLink[i] = s.dictLink.id
+			trie.dictLink[i] = s.dictLink.id
+		}
+		// Precompute fail transitions.
+		for b := 0; b < 256; b++ {
+			c := byte(b)
+			trie.failTrans[i][c] = tb.computeFailTransition(s, c)
 		}
 	}
 
-	return &Trie{dict, trans, failLink, dictLink, pattern}
+	return trie
+}
+
+func (tb *TrieBuilder) computeFailTransition(s *state, c byte) int64 {
+	for t := s; t != nil && t != tb.root; t = t.failLink {
+		if t.trans == nil {
+			// Uninitialized trans map.
+			continue
+		}
+		if next, ok := t.trans[c]; ok {
+			return next.id
+		}
+	}
+	if tb.root.trans != nil {
+		if next, ok := tb.root.trans[c]; ok {
+			return next.id
+		}
+	}
+	return rootState
 }
 
 func (tb *TrieBuilder) computeFailLinks(s *state) {
+	// log.Printf("Computing failLink for state %d (value=%c)", s.id, s.value)
+
+	// Skip if already computed
 	if s.failLink != nil {
 		return
 	}
@@ -179,10 +208,14 @@ func (tb *TrieBuilder) computeFailLinks(s *state) {
 		s.failLink = tb.root
 	} else {
 		var ok bool
+		// Ensure parent's failLink is computed
+		if s.parent.failLink == nil {
+			tb.computeFailLinks(s.parent)
+		}
 
-		for t := s.parent.failLink; t != tb.root; t = t.failLink {
-			if t.failLink == nil {
-				tb.computeFailLinks(t)
+		for t := s.parent.failLink; t != nil && t != tb.root; t = t.failLink {
+			if t.trans == nil {
+				continue
 			}
 
 			if s.failLink, ok = t.trans[s.value]; ok {
@@ -191,7 +224,11 @@ func (tb *TrieBuilder) computeFailLinks(s *state) {
 		}
 
 		if s.failLink == nil {
-			if s.failLink, ok = tb.root.trans[s.value]; !ok {
+			if tb.root.trans != nil {
+				if s.failLink, ok = tb.root.trans[s.value]; !ok {
+					s.failLink = tb.root
+				}
+			} else {
 				s.failLink = tb.root
 			}
 		}

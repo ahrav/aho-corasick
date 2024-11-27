@@ -130,6 +130,11 @@ func (dec *decoder) decode() (*Trie, error) {
 		return nil, err
 	}
 
+	failTrans := make([][256]int64, failLinkLen)
+	if err := binary.Read(r, binary.LittleEndian, failTrans); err != nil {
+		return nil, err
+	}
+
 	dictLink := make([]int64, dictLinkLen)
 	if err := binary.Read(r, binary.LittleEndian, dictLink); err != nil {
 		return nil, err
@@ -140,5 +145,5 @@ func (dec *decoder) decode() (*Trie, error) {
 		return nil, err
 	}
 
-	return &Trie{dict, trans, failLink, dictLink, pattern}, nil
+	return &Trie{trans, failTrans, failLink, dictLink, dict, pattern}, nil
 }
