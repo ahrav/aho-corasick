@@ -141,78 +141,83 @@ func (tb *TrieBuilder) LoadStrings(path string) error {
 
 // Build constructs the Trie.
 func (tb *TrieBuilder) Build() *Trie {
-
-	tb.computeFailLinks(tb.root)
-	tb.computeDictLinks(tb.root)
+	tb.computeFailLinks()
+	tb.computeDictLinks()
 
 	numStates := len(tb.states)
 
-	dict := make([]int64, numStates)
-	trans := make([][256]int64, numStates)
-	failLink := make([]int64, numStates)
-	dictLink := make([]int64, numStates)
-	pattern := make([]int64, numStates)
+	trie := &Trie{
+		trans:     make([][256]int64, numStates),
+		failTrans: make([][256]int64, numStates),
+		failLink:  make([]int64, numStates),
+		dictLink:  make([]int64, numStates),
+		dict:      make([]int64, numStates),
+		pattern:   make([]int64, numStates),
+	}
 
 	for i, s := range tb.states {
-		dict[i] = s.dict
-		pattern[i] = s.pattern
+		trie.dict[i] = s.dict
+		trie.pattern[i] = s.pattern
 		for c, t := range s.trans {
-			trans[i][c] = t.id
+			trie.trans[i][c] = t.id
 		}
 		if s.failLink != nil {
-			failLink[i] = s.failLink.id
+			trie.failLink[i] = s.failLink.id
 		}
 		if s.dictLink != nil {
-			dictLink[i] = s.dictLink.id
+			trie.dictLink[i] = s.dictLink.id
+		}
+		// Precompute fail transitions.
+		for b := range 256 {
+			c := byte(b)
+			trie.failTrans[i][c] = tb.computeFailTransition(s, c)
 		}
 	}
 
-	return &Trie{dict, trans, failLink, dictLink, pattern}
+	return trie
 }
 
-func (tb *TrieBuilder) computeFailLinks(s *state) {
-	if s.failLink != nil {
-		return
+// computeFailTransition precomputes the fail transition for a given state and character.
+func (tb *TrieBuilder) computeFailTransition(s *state, c byte) int64 {
+	for t := s; t != nil; t = t.failLink {
+		if next, exists := t.trans[c]; exists {
+			return next.id
+		}
 	}
+	return tb.root.id
+}
 
-	if s == tb.root || s.parent == tb.root {
-		s.failLink = tb.root
-	} else {
-		var ok bool
+func (tb *TrieBuilder) computeFailLinks() {
+	queue := []*state{tb.root}
+	for len(queue) > 0 {
+		s := queue[0]
+		queue = queue[1:]
 
-		for t := s.parent.failLink; t != tb.root; t = t.failLink {
-			if t.failLink == nil {
-				tb.computeFailLinks(t)
+		for _, t := range s.trans {
+			queue = append(queue, t)
+			fail := s.failLink
+			for fail != nil && fail.trans[t.value] == nil {
+				fail = fail.failLink
 			}
+			if fail != nil {
+				t.failLink = fail.trans[t.value]
+			} else {
+				t.failLink = tb.root
+			}
+		}
+	}
+}
 
-			if s.failLink, ok = t.trans[s.value]; ok {
+func (tb *TrieBuilder) computeDictLinks() {
+	for _, s := range tb.states {
+		if s == tb.root {
+			continue
+		}
+		for fail := s.failLink; fail != nil; fail = fail.failLink {
+			if fail.dict > 0 {
+				s.dictLink = fail
 				break
 			}
 		}
-
-		if s.failLink == nil {
-			if s.failLink, ok = tb.root.trans[s.value]; !ok {
-				s.failLink = tb.root
-			}
-		}
-	}
-
-	for _, t := range s.trans {
-		tb.computeFailLinks(t)
-	}
-}
-
-func (tb *TrieBuilder) computeDictLinks(s *state) {
-	if s != tb.root {
-		for t := s.failLink; t != tb.root; t = t.failLink {
-			if t.dict != 0 {
-				s.dictLink = t
-				break
-			}
-		}
-	}
-
-	for _, t := range s.trans {
-		tb.computeDictLinks(t)
 	}
 }
