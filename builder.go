@@ -141,9 +141,8 @@ func (tb *TrieBuilder) LoadStrings(path string) error {
 
 // Build constructs the Trie.
 func (tb *TrieBuilder) Build() *Trie {
-
-	tb.computeFailLinks(tb.root)
-	tb.computeDictLinks(tb.root)
+	tb.computeFailLinks()
+	tb.computeDictLinks()
 
 	numStates := len(tb.states)
 
@@ -178,78 +177,120 @@ func (tb *TrieBuilder) Build() *Trie {
 	return trie
 }
 
+// computeFailTransition precomputes the fail transition for a given state and character.
 func (tb *TrieBuilder) computeFailTransition(s *state, c byte) int64 {
-	for t := s; t != nil && t != tb.root; t = t.failLink {
-		if t.trans == nil {
-			// Uninitialized trans map.
-			continue
-		}
-		if next, ok := t.trans[c]; ok {
+	for t := s; t != nil; t = t.failLink {
+		if next, exists := t.trans[c]; exists {
 			return next.id
 		}
 	}
-	if tb.root.trans != nil {
-		if next, ok := tb.root.trans[c]; ok {
-			return next.id
-		}
-	}
-	return rootState
+	return tb.root.id
 }
 
-func (tb *TrieBuilder) computeFailLinks(s *state) {
+// func (tb *TrieBuilder) computeFailTransition(s *state, c byte) int64 {
+// 	for t := s; t != nil && t != tb.root; t = t.failLink {
+// 		if t.trans == nil {
+// 			// Uninitialized trans map.
+// 			continue
+// 		}
+// 		if next, ok := t.trans[c]; ok {
+// 			return next.id
+// 		}
+// 	}
+// 	if tb.root.trans != nil {
+// 		if next, ok := tb.root.trans[c]; ok {
+// 			return next.id
+// 		}
+// 	}
+// 	return rootState
+// }
+
+func (tb *TrieBuilder) computeFailLinks() {
+	queue := []*state{tb.root}
+	for len(queue) > 0 {
+		s := queue[0]
+		queue = queue[1:]
+
+		for _, t := range s.trans {
+			queue = append(queue, t)
+			fail := s.failLink
+			for fail != nil && fail.trans[t.value] == nil {
+				fail = fail.failLink
+			}
+			if fail != nil {
+				t.failLink = fail.trans[t.value]
+			} else {
+				t.failLink = tb.root
+			}
+		}
+	}
 	// log.Printf("Computing failLink for state %d (value=%c)", s.id, s.value)
 
-	// Skip if already computed
-	if s.failLink != nil {
-		return
-	}
+	// // Skip if already computed
+	// if s.failLink != nil {
+	// 	return
+	// }
 
-	if s == tb.root || s.parent == tb.root {
-		s.failLink = tb.root
-	} else {
-		var ok bool
-		// Ensure parent's failLink is computed
-		if s.parent.failLink == nil {
-			tb.computeFailLinks(s.parent)
+	// if s == tb.root || s.parent == tb.root {
+	// 	s.failLink = tb.root
+	// } else {
+	// 	var ok bool
+	// 	// Ensure parent's failLink is computed
+	// 	if s.parent.failLink == nil {
+	// 		tb.computeFailLinks(s.parent)
+	// 	}
+
+	// 	for t := s.parent.failLink; t != nil && t != tb.root; t = t.failLink {
+	// 		if t.trans == nil {
+	// 			continue
+	// 		}
+
+	// 		if s.failLink, ok = t.trans[s.value]; ok {
+	// 			break
+	// 		}
+	// 	}
+
+	// 	if s.failLink == nil {
+	// 		if tb.root.trans != nil {
+	// 			if s.failLink, ok = tb.root.trans[s.value]; !ok {
+	// 				s.failLink = tb.root
+	// 			}
+	// 		} else {
+	// 			s.failLink = tb.root
+	// 		}
+	// 	}
+	// }
+
+	// for _, t := range s.trans {
+	// 	tb.computeFailLinks(t)
+	// }
+}
+
+func (tb *TrieBuilder) computeDictLinks() {
+	for _, s := range tb.states {
+		if s == tb.root {
+			continue
 		}
-
-		for t := s.parent.failLink; t != nil && t != tb.root; t = t.failLink {
-			if t.trans == nil {
-				continue
-			}
-
-			if s.failLink, ok = t.trans[s.value]; ok {
+		for fail := s.failLink; fail != nil; fail = fail.failLink {
+			if fail.dict > 0 {
+				s.dictLink = fail
 				break
 			}
 		}
-
-		if s.failLink == nil {
-			if tb.root.trans != nil {
-				if s.failLink, ok = tb.root.trans[s.value]; !ok {
-					s.failLink = tb.root
-				}
-			} else {
-				s.failLink = tb.root
-			}
-		}
-	}
-
-	for _, t := range s.trans {
-		tb.computeFailLinks(t)
 	}
 }
 
-func (tb *TrieBuilder) computeDictLinks(s *state) {
-	if s != tb.root {
-		for t := s.failLink; t != tb.root; t = t.failLink {
-			if t.dict != 0 {
-				s.dictLink = t
-				break
-			}
-		}
-	}
+// func (tb *TrieBuilder) computeDictLinks(s *state) {
+// 	if s != tb.root {
+// 		for t := s.failLink; t != tb.root; t = t.failLink {
+// 			if t.dict != 0 {
+// 				s.dictLink = t
+// 				break
+// 			}
+// 		}
+// 	}
 
-	for _, t := range s.trans {
-		tb.computeDictLinks(t)
-	}
-}
+// 	for _, t := range s.trans {
+// 		tb.computeDictLinks(t)
+// 	}
+// }

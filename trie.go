@@ -10,7 +10,7 @@ type Trie struct {
 	// Group transition arrays together for better cache locality
 	failTrans [][256]int64
 
-	trans     [][256]int64
+	trans [][256]int64
 
 	// Group link arrays together
 	failLink []int64
@@ -52,7 +52,7 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 
 // Match runs the Aho-Corasick string-search algorithm on a byte input.
 func (tr *Trie) Match(input []byte) []*Match {
-	matches := make([]*Match, 0, len(input)>>5) // Shift right by 5 is equivalent to dividing by 32
+	matches := make([]*Match, 0, len(input)>>5) // heuristic to reduce memory allocation
 	tr.Walk(input, func(end, n, pattern int64) bool {
 		pos := end - n + 1
 		matches = append(matches, newMatch(pos, pattern, input[pos:pos+n]))
