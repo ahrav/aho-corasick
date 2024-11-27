@@ -7,18 +7,14 @@ const (
 
 // Trie represents a trie of patterns with extra links as per the Aho-Corasick algorithm.
 type Trie struct {
-	// Group transition arrays together for better cache locality
 	failTrans [][256]int64
 
-	trans [][256]int64
-
-	// Group link arrays together
-	failLink []int64
+	dict     []int64
+	pattern  []int64
 	dictLink []int64
 
-	// Group pattern-related arrays
-	dict    []int64
-	pattern []int64
+	trans    [][256]int64
+	failLink []int64
 }
 
 // Walk calls this function on any match, giving the end position, length of the matched bytes,
@@ -28,21 +24,27 @@ type WalkFn func(end, n, pattern int64) bool
 // Walk runs the algorithm on a given output, calling the supplied callback function on every
 // match. The algorithm will terminate if the callback function returns false.
 func (tr *Trie) Walk(input []byte, fn WalkFn) {
+	// Local references to frequently accessed slices
+	failTrans := tr.failTrans
+	dict := tr.dict
+	pattern := tr.pattern
+	dictLink := tr.dictLink
+
 	s := rootState
 
-	for i, c := range input {
-		// Use precomputed failure transition.
-		s = tr.failTrans[s][c]
+	inputLen := len(input)
+	for i := range inputLen {
+		s = failTrans[s][input[i]]
 
-		if tr.dict[s] != 0 || tr.dictLink[s] != nilState {
+		if dict[s] != 0 || dictLink[s] != nilState {
 			// Primary match check
-			if tr.dict[s] != 0 && !fn(int64(i), tr.dict[s], tr.pattern[s]) {
+			if dict[s] != 0 && !fn(int64(i), dict[s], pattern[s]) {
 				return
 			}
 
 			// Dictionary link traversal
-			for u := tr.dictLink[s]; u != nilState; u = tr.dictLink[u] {
-				if !fn(int64(i), tr.dict[u], tr.pattern[u]) {
+			for u := dictLink[s]; u != nilState; u = dictLink[u] {
+				if !fn(int64(i), dict[u], pattern[u]) {
 					return
 				}
 			}
