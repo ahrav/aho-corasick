@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"strings"
+	"sync"
 )
 
 type state struct {
@@ -153,6 +154,10 @@ func (tb *TrieBuilder) Build() *Trie {
 		dictLink:  make([]int64, numStates),
 		dict:      make([]int64, numStates),
 		pattern:   make([]int64, numStates),
+	}
+
+	trie.matchPool = sync.Pool{
+		New: func() any { return make([]*Match, 0, 8) },
 	}
 
 	for i, s := range tb.states {
