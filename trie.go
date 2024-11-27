@@ -17,10 +17,11 @@ type Trie struct {
 	pattern  []int64
 	dictLink []int64
 
+	matchPool       sync.Pool // Pool for match slices
+	matchStructPool sync.Pool // Pool for Match structs
+
 	trans    [][256]int64
 	failLink []int64
-
-	matchPool sync.Pool // Pool for match slices
 }
 
 // Walk calls this function on any match, giving the end position, length of the matched bytes,
@@ -65,7 +66,11 @@ func (tr *Trie) Match(input []byte) []*Match {
 
 	tr.Walk(input, func(end, n, pattern int64) bool {
 		pos := end - n + 1
-		matches = append(matches, newMatch(pos, pattern, input[pos:pos+n]))
+		m := tr.matchStructPool.Get().(*Match)
+		m.pos = pos
+		m.pattern = pattern
+		m.match = input[pos : pos+n]
+		matches = append(matches, m)
 		return true
 	})
 
@@ -95,5 +100,8 @@ func (tr *Trie) MatchFirstString(input string) *Match {
 
 // New method to return slice to pool
 func (tr *Trie) ReleaseMatches(matches []*Match) {
+	for _, m := range matches {
+		tr.matchStructPool.Put(m)
+	}
 	tr.matchPool.Put(matches)
 }

@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"io"
+	"sync"
 )
 
 // Encode writes a Trie to w in gzip compressed binary format.
@@ -56,12 +57,21 @@ func (enc *encoder) encode(trie *Trie) error {
 	if err := binary.Write(w, binary.LittleEndian, trie.dict); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.LittleEndian, trie.trans); err != nil {
-		return err
+
+	// Flatten and write trans
+	for _, arr := range trie.trans {
+		if err := binary.Write(w, binary.LittleEndian, arr[:]); err != nil {
+			return err
+		}
 	}
-	if err := binary.Write(w, binary.LittleEndian, trie.failTrans); err != nil {
-		return err
+
+	// Flatten and write failTrans
+	for _, arr := range trie.failTrans {
+		if err := binary.Write(w, binary.LittleEndian, arr[:]); err != nil {
+			return err
+		}
 	}
+
 	if err := binary.Write(w, binary.LittleEndian, trie.failLink); err != nil {
 		return err
 	}
@@ -120,14 +130,24 @@ func (dec *decoder) decode() (*Trie, error) {
 		return nil, err
 	}
 
+	// Read and reshape trans
 	trans := make([][256]int64, transLen)
-	if err := binary.Read(r, binary.LittleEndian, trans); err != nil {
+	flatTrans := make([]int64, transLen*256)
+	if err := binary.Read(r, binary.LittleEndian, flatTrans); err != nil {
 		return nil, err
 	}
+	for i := range trans {
+		copy(trans[i][:], flatTrans[i*256:(i+1)*256])
+	}
 
+	// Read and reshape failTrans
 	failTrans := make([][256]int64, failTransLen)
-	if err := binary.Read(r, binary.LittleEndian, failTrans); err != nil {
+	flatFailTrans := make([]int64, failTransLen*256)
+	if err := binary.Read(r, binary.LittleEndian, flatFailTrans); err != nil {
 		return nil, err
+	}
+	for i := range failTrans {
+		copy(failTrans[i][:], flatFailTrans[i*256:(i+1)*256])
 	}
 
 	failLink := make([]int64, failLinkLen)
@@ -152,5 +172,11 @@ func (dec *decoder) decode() (*Trie, error) {
 		dictLink:  dictLink,
 		dict:      dict,
 		pattern:   pattern,
+		matchPool: sync.Pool{
+			New: func() any { return make([]*Match, 0, 10) },
+		},
+		matchStructPool: sync.Pool{
+			New: func() any { return &Match{} },
+		},
 	}, nil
 }

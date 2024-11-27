@@ -157,7 +157,16 @@ func (tb *TrieBuilder) Build() *Trie {
 	}
 
 	trie.matchPool = sync.Pool{
-		New: func() any { return make([]*Match, 0, 8) },
+		New: func() any { return make([]*Match, 0, 16) },
+	}
+	trie.matchStructPool = sync.Pool{
+		New: func() any { return new(Match) },
+	}
+
+	// Populate the pool
+	for range 64 {
+		trie.matchPool.Put(make([]*Match, 0, 16))
+		trie.matchStructPool.Put(new(Match))
 	}
 
 	for i, s := range tb.states {
@@ -178,6 +187,9 @@ func (tb *TrieBuilder) Build() *Trie {
 			trie.failTrans[i][c] = tb.computeFailTransition(s, c)
 		}
 	}
+
+	trie.failLink = nil
+	trie.trans = nil
 
 	return trie
 }
