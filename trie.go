@@ -20,8 +20,8 @@ type Trie struct {
 	matchPool       sync.Pool // Pool for match slices
 	matchStructPool sync.Pool // Pool for Match structs
 
-	trans    [][256]int64
-	failLink []int64
+	// trans    [][256]int64
+	// failLink []int64
 }
 
 // Walk calls this function on any match, giving the end position, length of the matched bytes,

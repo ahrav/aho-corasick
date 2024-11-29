@@ -146,11 +146,11 @@ func (tb *TrieBuilder) Build() *Trie {
 	tb.computeDictLinks()
 
 	numStates := len(tb.states)
+	trans := make([][256]int64, numStates)
+	failLink := make([]int64, numStates)
 
 	trie := &Trie{
-		trans:     make([][256]int64, numStates),
 		failTrans: make([][256]int64, numStates),
-		failLink:  make([]int64, numStates),
 		dictLink:  make([]int64, numStates),
 		dict:      make([]int64, numStates),
 		pattern:   make([]int64, numStates),
@@ -173,10 +173,10 @@ func (tb *TrieBuilder) Build() *Trie {
 		trie.dict[i] = s.dict
 		trie.pattern[i] = s.pattern
 		for c, t := range s.trans {
-			trie.trans[i][c] = t.id
+			trans[i][c] = t.id
 		}
 		if s.failLink != nil {
-			trie.failLink[i] = s.failLink.id
+			failLink[i] = s.failLink.id
 		}
 		if s.dictLink != nil {
 			trie.dictLink[i] = s.dictLink.id
@@ -188,8 +188,8 @@ func (tb *TrieBuilder) Build() *Trie {
 		}
 	}
 
-	trie.failLink = nil
-	trie.trans = nil
+	// trie.failLink = nil
+	// trie.trans = nil
 
 	return trie
 }
