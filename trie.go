@@ -79,13 +79,24 @@ func (tr *Trie) Match(input []byte) []*Match {
 
 // MatchFirst is the same as Match, but returns after first successful match.
 func (tr *Trie) MatchFirst(input []byte) *Match {
-	var match *Match
+	matches := tr.matchPool.Get().([]*Match)
+	matches = matches[:0] // Reset length but keep capacity
+
 	tr.Walk(input, func(end, n, pattern uint32) bool {
 		pos := end - n + 1
-		match = &Match{pos: pos, match: input[pos : pos+n]}
+		m := tr.matchStructPool.Get().(*Match)
+		m.pos = pos
+		m.pattern = pattern
+		m.match = input[pos : pos+n]
+		matches = append(matches, m)
 		return false
 	})
-	return match
+
+	if len(matches) == 0 {
+		return nil
+	}
+
+	return matches[0]
 }
 
 // MatchString runs the Aho-Corasick string-search algorithm on a string input.

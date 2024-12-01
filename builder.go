@@ -9,14 +9,14 @@ import (
 )
 
 type state struct {
-	id       uint32
-	value    byte
 	parent   *state
-	trans    map[byte]*state
-	dict     uint32
 	failLink *state
 	dictLink *state
+	trans    map[byte]*state
+	id       uint32
+	dict     uint32
 	pattern  uint32
+	value    byte
 }
 
 // TrieBuilder is used to build Tries.
@@ -187,9 +187,6 @@ func (tb *TrieBuilder) Build() *Trie {
 			trie.failTrans[i][c] = tb.computeFailTransition(s, c)
 		}
 	}
-
-	// trie.failLink = nil
-	// trie.trans = nil
 
 	return trie
 }
