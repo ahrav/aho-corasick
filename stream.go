@@ -125,7 +125,7 @@ func (dec *decoder) decode() (*Trie, error) {
 	}
 
 	// Allocate memory and read the actual data
-	dict := make([]int64, dictLen)
+	dict := make([]uint32, dictLen)
 	if err := binary.Read(r, binary.LittleEndian, dict); err != nil {
 		return nil, err
 	}
@@ -141,8 +141,8 @@ func (dec *decoder) decode() (*Trie, error) {
 	// }
 
 	// Read and reshape failTrans
-	failTrans := make([][256]int64, failTransLen)
-	flatFailTrans := make([]int64, failTransLen*256)
+	failTrans := make([][256]uint32, failTransLen)
+	flatFailTrans := make([]uint32, failTransLen*256)
 	if err := binary.Read(r, binary.LittleEndian, flatFailTrans); err != nil {
 		return nil, err
 	}
@@ -155,12 +155,12 @@ func (dec *decoder) decode() (*Trie, error) {
 	// 	return nil, err
 	// }
 
-	dictLink := make([]int64, dictLinkLen)
+	dictLink := make([]uint32, dictLinkLen)
 	if err := binary.Read(r, binary.LittleEndian, dictLink); err != nil {
 		return nil, err
 	}
 
-	pattern := make([]int64, patternLen)
+	pattern := make([]uint32, patternLen)
 	if err := binary.Read(r, binary.LittleEndian, pattern); err != nil {
 		return nil, err
 	}

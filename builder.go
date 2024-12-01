@@ -9,21 +9,21 @@ import (
 )
 
 type state struct {
-	id       int64
+	id       uint32
 	value    byte
 	parent   *state
 	trans    map[byte]*state
-	dict     int64
+	dict     uint32
 	failLink *state
 	dictLink *state
-	pattern  int64
+	pattern  uint32
 }
 
 // TrieBuilder is used to build Tries.
 type TrieBuilder struct {
 	states      []*state
 	root        *state
-	numPatterns int64
+	numPatterns uint32
 }
 
 // NewTrieBuilder creates and initializes a new TrieBuilder.
@@ -41,7 +41,7 @@ func NewTrieBuilder() *TrieBuilder {
 
 func (tb *TrieBuilder) addState(value byte, parent *state) *state {
 	s := &state{
-		id:       int64(len(tb.states)),
+		id:       uint32(len(tb.states)),
 		value:    value,
 		parent:   parent,
 		trans:    make(map[byte]*state),
@@ -68,7 +68,7 @@ func (tb *TrieBuilder) AddPattern(pattern []byte) *TrieBuilder {
 		s = t
 	}
 
-	s.dict = int64(len(pattern))
+	s.dict = uint32(len(pattern))
 	s.pattern = tb.numPatterns
 	tb.numPatterns++
 
@@ -146,14 +146,14 @@ func (tb *TrieBuilder) Build() *Trie {
 	tb.computeDictLinks()
 
 	numStates := len(tb.states)
-	trans := make([][256]int64, numStates)
-	failLink := make([]int64, numStates)
+	trans := make([][256]uint32, numStates)
+	failLink := make([]uint32, numStates)
 
 	trie := &Trie{
-		failTrans: make([][256]int64, numStates),
-		dictLink:  make([]int64, numStates),
-		dict:      make([]int64, numStates),
-		pattern:   make([]int64, numStates),
+		failTrans: make([][256]uint32, numStates),
+		dictLink:  make([]uint32, numStates),
+		dict:      make([]uint32, numStates),
+		pattern:   make([]uint32, numStates),
 	}
 
 	trie.matchPool = sync.Pool{
@@ -195,7 +195,7 @@ func (tb *TrieBuilder) Build() *Trie {
 }
 
 // computeFailTransition precomputes the fail transition for a given state and character.
-func (tb *TrieBuilder) computeFailTransition(s *state, c byte) int64 {
+func (tb *TrieBuilder) computeFailTransition(s *state, c byte) uint32 {
 	for t := s; t != nil; t = t.failLink {
 		if next, exists := t.trans[c]; exists {
 			return next.id

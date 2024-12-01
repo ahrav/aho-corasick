@@ -5,17 +5,17 @@ import (
 )
 
 const (
-	rootState int64 = 1
-	nilState  int64 = 0
+	rootState uint32 = 1
+	nilState  uint32 = 0
 )
 
 // Trie represents a trie of patterns with extra links as per the Aho-Corasick algorithm.
 type Trie struct {
-	failTrans [][256]int64
+	failTrans [][256]uint32
 
-	dict     []int64
-	pattern  []int64
-	dictLink []int64
+	dict     []uint32
+	pattern  []uint32
+	dictLink []uint32
 
 	matchPool       sync.Pool // Pool for match slices
 	matchStructPool sync.Pool // Pool for Match structs
@@ -26,7 +26,7 @@ type Trie struct {
 
 // Walk calls this function on any match, giving the end position, length of the matched bytes,
 // and the pattern number.
-type WalkFn func(end, n, pattern int64) bool
+type WalkFn func(end, n, pattern uint32) bool
 
 // Walk runs the algorithm on a given output, calling the supplied callback function on every
 // match. The algorithm will terminate if the callback function returns false.
@@ -45,13 +45,13 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 
 		if dict[s] != 0 || dictLink[s] != nilState {
 			// Primary match check
-			if dict[s] != 0 && !fn(int64(i), dict[s], pattern[s]) {
+			if dict[s] != 0 && !fn(uint32(i), dict[s], pattern[s]) {
 				return
 			}
 
 			// Dictionary link traversal
 			for u := dictLink[s]; u != nilState; u = dictLink[u] {
-				if !fn(int64(i), dict[u], pattern[u]) {
+				if !fn(uint32(i), dict[u], pattern[u]) {
 					return
 				}
 			}
@@ -64,7 +64,7 @@ func (tr *Trie) Match(input []byte) []*Match {
 	matches := tr.matchPool.Get().([]*Match)
 	matches = matches[:0] // Reset length but keep capacity
 
-	tr.Walk(input, func(end, n, pattern int64) bool {
+	tr.Walk(input, func(end, n, pattern uint32) bool {
 		pos := end - n + 1
 		m := tr.matchStructPool.Get().(*Match)
 		m.pos = pos
@@ -80,7 +80,7 @@ func (tr *Trie) Match(input []byte) []*Match {
 // MatchFirst is the same as Match, but returns after first successful match.
 func (tr *Trie) MatchFirst(input []byte) *Match {
 	var match *Match
-	tr.Walk(input, func(end, n, pattern int64) bool {
+	tr.Walk(input, func(end, n, pattern uint32) bool {
 		pos := end - n + 1
 		match = &Match{pos: pos, match: input[pos : pos+n]}
 		return false
