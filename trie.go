@@ -17,11 +17,8 @@ type Trie struct {
 	pattern  []uint32
 	dictLink []uint32
 
-	matchPool       sync.Pool // Pool for match slices
+	matchPool       sync.Pool // Pool for match slice pointers
 	matchStructPool sync.Pool // Pool for Match structs
-
-	// trans    [][256]int64
-	// failLink []int64
 }
 
 // Walk calls this function on any match, giving the end position, length of the matched bytes,
@@ -31,7 +28,7 @@ type WalkFn func(end, n, pattern uint32) bool
 // Walk runs the algorithm on a given output, calling the supplied callback function on every
 // match. The algorithm will terminate if the callback function returns false.
 func (tr *Trie) Walk(input []byte, fn WalkFn) {
-	// Local references to frequently accessed slices
+	// Local references to frequently accessed slices.
 	failTrans := tr.failTrans
 	dict := tr.dict
 	pattern := tr.pattern
@@ -43,14 +40,13 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 	for i := range inputLen {
 		s = failTrans[s][input[i]]
 
-		if dict[s] != 0 || dictLink[s] != nilState {
-			// Primary match check
-			if dict[s] != 0 && !fn(uint32(i), dict[s], pattern[s]) {
+		ds := dict[s]
+		dl := dictLink[s]
+		if ds != 0 || dl != nilState {
+			if ds != 0 && !fn(uint32(i), ds, pattern[s]) {
 				return
 			}
-
-			// Dictionary link traversal
-			for u := dictLink[s]; u != nilState; u = dictLink[u] {
+			for u := dl; u != nilState; u = dictLink[u] {
 				if !fn(uint32(i), dict[u], pattern[u]) {
 					return
 				}
@@ -61,8 +57,8 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 
 // Match runs the Aho-Corasick string-search algorithm on a byte input.
 func (tr *Trie) Match(input []byte) []*Match {
-	matches := tr.matchPool.Get().([]*Match)
-	matches = matches[:0] // Reset length but keep capacity
+	matches := tr.matchPool.Get().(*[]*Match)
+	*matches = (*matches)[:0] // Reset length but keep capacity
 
 	tr.Walk(input, func(end, n, pattern uint32) bool {
 		pos := end - n + 1
@@ -70,17 +66,17 @@ func (tr *Trie) Match(input []byte) []*Match {
 		m.pos = pos
 		m.pattern = pattern
 		m.match = input[pos : pos+n]
-		matches = append(matches, m)
+		*matches = append(*matches, m)
 		return true
 	})
 
-	return matches
+	return *matches
 }
 
 // MatchFirst is the same as Match, but returns after first successful match.
 func (tr *Trie) MatchFirst(input []byte) *Match {
-	matches := tr.matchPool.Get().([]*Match)
-	matches = matches[:0] // Reset length but keep capacity
+	matches := tr.matchPool.Get().(*[]*Match)
+	*matches = (*matches)[:0] // Reset length but keep capacity
 
 	tr.Walk(input, func(end, n, pattern uint32) bool {
 		pos := end - n + 1
@@ -88,15 +84,18 @@ func (tr *Trie) MatchFirst(input []byte) *Match {
 		m.pos = pos
 		m.pattern = pattern
 		m.match = input[pos : pos+n]
-		matches = append(matches, m)
+		*matches = append(*matches, m)
 		return false
 	})
 
-	if len(matches) == 0 {
+	if len(*matches) == 0 {
+		tr.matchPool.Put(matches)
 		return nil
 	}
 
-	return matches[0]
+	result := (*matches)[0]
+	tr.matchPool.Put(matches)
+	return result
 }
 
 // MatchString runs the Aho-Corasick string-search algorithm on a string input.
@@ -111,8 +110,9 @@ func (tr *Trie) MatchFirstString(input string) *Match {
 
 // New method to return slice to pool
 func (tr *Trie) ReleaseMatches(matches []*Match) {
-	for _, m := range matches {
+	matchesPtr := &matches
+	for _, m := range *matchesPtr {
 		tr.matchStructPool.Put(m)
 	}
-	tr.matchPool.Put(matches)
+	tr.matchPool.Put(matchesPtr)
 }

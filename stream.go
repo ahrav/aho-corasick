@@ -37,15 +37,9 @@ func (enc *encoder) encode(trie *Trie) error {
 	if err := binary.Write(w, binary.LittleEndian, uint64(len(trie.dict))); err != nil {
 		return err
 	}
-	// if err := binary.Write(w, binary.LittleEndian, uint64(len(trie.trans))); err != nil {
-	// 	return err
-	// }
 	if err := binary.Write(w, binary.LittleEndian, uint64(len(trie.failTrans))); err != nil {
 		return err
 	}
-	// if err := binary.Write(w, binary.LittleEndian, uint64(len(trie.failLink))); err != nil {
-	// 	return err
-	// }
 	if err := binary.Write(w, binary.LittleEndian, uint64(len(trie.dictLink))); err != nil {
 		return err
 	}
@@ -58,13 +52,6 @@ func (enc *encoder) encode(trie *Trie) error {
 		return err
 	}
 
-	// Flatten and write trans
-	// for _, arr := range trie.trans {
-	// 	if err := binary.Write(w, binary.LittleEndian, arr[:]); err != nil {
-	// 		return err
-	// 	}
-	// }
-
 	// Flatten and write failTrans
 	for _, arr := range trie.failTrans {
 		if err := binary.Write(w, binary.LittleEndian, arr[:]); err != nil {
@@ -72,9 +59,6 @@ func (enc *encoder) encode(trie *Trie) error {
 		}
 	}
 
-	// if err := binary.Write(w, binary.LittleEndian, trie.failLink); err != nil {
-	// 	return err
-	// }
 	if err := binary.Write(w, binary.LittleEndian, trie.dictLink); err != nil {
 		return err
 	}
@@ -108,15 +92,9 @@ func (dec *decoder) decode() (*Trie, error) {
 	if err := binary.Read(r, binary.LittleEndian, &dictLen); err != nil {
 		return nil, err
 	}
-	// if err := binary.Read(r, binary.LittleEndian, &transLen); err != nil {
-	// 	return nil, err
-	// }
 	if err := binary.Read(r, binary.LittleEndian, &failTransLen); err != nil {
 		return nil, err
 	}
-	// if err := binary.Read(r, binary.LittleEndian, &failLinkLen); err != nil {
-	// 	return nil, err
-	// }
 	if err := binary.Read(r, binary.LittleEndian, &dictLinkLen); err != nil {
 		return nil, err
 	}
@@ -130,16 +108,6 @@ func (dec *decoder) decode() (*Trie, error) {
 		return nil, err
 	}
 
-	// Read and reshape trans
-	// trans := make([][256]int64, transLen)
-	// flatTrans := make([]int64, transLen*256)
-	// if err := binary.Read(r, binary.LittleEndian, flatTrans); err != nil {
-	// 	return nil, err
-	// }
-	// for i := range trans {
-	// 	copy(trans[i][:], flatTrans[i*256:(i+1)*256])
-	// }
-
 	// Read and reshape failTrans
 	failTrans := make([][256]uint32, failTransLen)
 	flatFailTrans := make([]uint32, failTransLen*256)
@@ -149,11 +117,6 @@ func (dec *decoder) decode() (*Trie, error) {
 	for i := range failTrans {
 		copy(failTrans[i][:], flatFailTrans[i*256:(i+1)*256])
 	}
-
-	// failLink := make([]int64, failLinkLen)
-	// if err := binary.Read(r, binary.LittleEndian, failLink); err != nil {
-	// 	return nil, err
-	// }
 
 	dictLink := make([]uint32, dictLinkLen)
 	if err := binary.Read(r, binary.LittleEndian, dictLink); err != nil {
@@ -166,17 +129,15 @@ func (dec *decoder) decode() (*Trie, error) {
 	}
 
 	return &Trie{
-		// trans:     trans,
 		failTrans: failTrans,
-		// failLink:  failLink,
-		dictLink: dictLink,
-		dict:     dict,
-		pattern:  pattern,
+		dictLink:  dictLink,
+		dict:      dict,
+		pattern:   pattern,
 		matchPool: sync.Pool{
-			New: func() any { return make([]*Match, 0, 10) },
+			New: func() any { return &[]*Match{} },
 		},
 		matchStructPool: sync.Pool{
-			New: func() any { return &Match{} },
+			New: func() any { return new(Match) },
 		},
 	}, nil
 }
