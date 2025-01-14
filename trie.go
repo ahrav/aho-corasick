@@ -93,9 +93,7 @@ func (tr *Trie) MatchFirst(input []byte) *Match {
 		return nil
 	}
 
-	result := (*matches)[0]
-	tr.matchPool.Put(matches)
-	return result
+	return (*matches)[0]
 }
 
 // MatchString runs the Aho-Corasick string-search algorithm on a string input.
