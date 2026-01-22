@@ -206,6 +206,8 @@ func (tb *TrieBuilder) Build() *Trie {
 		}
 	}
 
+	trie.initPrefilter()
+
 	return trie
 }
 

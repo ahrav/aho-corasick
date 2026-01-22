@@ -67,6 +67,17 @@ builder.LoadStrings("strings.txt")
 Both functions expects a text file with one pattern per line. `LoadPatterns` expects the pattern to
 be in hexadecimal form.
 
+## SIMD (experimental, Go 1.26)
+
+This library can use Go's experimental `simd/archsimd` package to accelerate
+root-state skipping when the pattern set has 16 or fewer distinct starting
+bytes. This is only available on amd64 with AVX and requires building with Go
+1.26 and `GOEXPERIMENT=simd` enabled.
+
+Example:
+
+    GOEXPERIMENT=simd gotip test ./...
+
 ## Storing
 
 Use `Encode` to store a `Trie` in gzip compressed binary format:

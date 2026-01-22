@@ -19,6 +19,7 @@ type Trie struct {
 
 	matchPool       sync.Pool // Pool for match slice pointers
 	matchStructPool sync.Pool // Pool for Match structs
+	prefilter       rootPrefilter
 }
 
 // Walk calls this function on any match, giving the end position, length of the matched bytes,
@@ -33,11 +34,20 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 	dict := tr.dict
 	pattern := tr.pattern
 	dictLink := tr.dictLink
+	prefilter := &tr.prefilter
 
 	s := rootState
 
 	inputLen := len(input)
-	for i := range inputLen {
+	for i := 0; i < inputLen; {
+		if s == rootState && prefilter.simd {
+			next := prefilter.nextCandidateSIMD(input, i)
+			if next >= inputLen {
+				return
+			}
+			i = next
+		}
+
 		s = failTrans[s][input[i]]
 
 		ds := dict[s]
@@ -52,6 +62,8 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 				}
 			}
 		}
+
+		i++
 	}
 }
 
