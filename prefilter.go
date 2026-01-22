@@ -1,19 +1,22 @@
 package ahocorasick
 
+// rootPrefilter accelerates scanning at the root state by skipping bytes that
+// cannot start any pattern. It tracks up to 16 candidate bytes for SIMD use.
 type rootPrefilter struct {
-	bytes  [16]byte
-	blocks [16][16]byte
-	count  int
-	simd   bool
+	bytes  [16]byte     // Candidate bytes that transition away from root.
+	blocks [16][16]byte // SIMD broadcast blocks for each candidate byte.
+	count  int          // Number of candidates in bytes/blocks.
+	simd   bool         // Whether SIMD scanning is enabled for this trie.
 }
 
 func (p *rootPrefilter) init(rootTrans [256]uint32) {
 	p.count = 0
 	p.simd = false
 
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		if rootTrans[b] != rootState {
 			if p.count == len(p.bytes) {
+				// Too many candidates for the SIMD prefilter; disable it.
 				p.count = 0
 				return
 			}
@@ -26,8 +29,9 @@ func (p *rootPrefilter) init(rootTrans [256]uint32) {
 		return
 	}
 
+	// Pre-broadcast each candidate byte for SIMD comparisons.
 	for i := 0; i < p.count; i++ {
-		for j := 0; j < 16; j++ {
+		for j := range 16 {
 			p.blocks[i][j] = p.bytes[i]
 		}
 	}
