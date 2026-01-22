@@ -128,7 +128,7 @@ func (dec *decoder) decode() (*Trie, error) {
 		return nil, err
 	}
 
-	return &Trie{
+	trie := &Trie{
 		failTrans: failTrans,
 		dictLink:  dictLink,
 		dict:      dict,
@@ -139,5 +139,8 @@ func (dec *decoder) decode() (*Trie, error) {
 		matchStructPool: sync.Pool{
 			New: func() any { return new(Match) },
 		},
-	}, nil
+	}
+	trie.initPrefilter()
+
+	return trie, nil
 }
