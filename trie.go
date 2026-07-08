@@ -76,6 +76,7 @@ type Trie struct {
 // known, so the arena never reallocates under live pointers.
 type matchBuf struct {
 	raw   []uint64 // pairs: end position, dictPat
+	raw2  []uint64 // second lane of the dual-cursor scan
 	ptrs  []*Match
 	arena []Match
 }
@@ -83,6 +84,7 @@ type matchBuf struct {
 // reset prepares the buffer for reuse, keeping all allocated capacity.
 func (b *matchBuf) reset() {
 	b.raw = b.raw[:0]
+	b.raw2 = b.raw2[:0]
 	b.ptrs = b.ptrs[:0]
 }
 
@@ -381,8 +383,9 @@ const parallelChunk = 8 << 10
 // Match runs the Aho-Corasick string-search algorithm on a byte input.
 func (tr *Trie) Match(input []byte) []*Match {
 	if len(input) >= 2*parallelChunk {
-		// More workers mainly adds wakeup and steal latency; cap at 8 to
-		// keep each chunk large enough to amortize goroutine startup.
+		// Workers dual-scan their chunks, so more of them mainly adds
+		// wakeup and steal latency; cap at 8 to keep each chunk large
+		// enough to amortize goroutine startup.
 		if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, 8); p > 1 {
 			return tr.matchParallel(input, p)
 		}
@@ -409,9 +412,19 @@ func (tr *Trie) Match(input []byte) []*Match {
 	return buf.ptrs
 }
 
+// dualThreshold is the minimum input size for the dual-cursor scan.
+const dualThreshold = 1024
+
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
+		// Dual-scan only when the maxLen-1 bytes lane B re-scans are a
+		// small fraction of a half; otherwise the redundant overlap work
+		// outweighs the overlapped load latency.
+		if len(input) >= dualThreshold && int(tr.maxLen)*4 < len(input)/2 {
+			tr.matchDualStopByte16(input, buf)
+			return
+		}
 		tr.matchStopByte16(input, buf)
 		return
 	}
@@ -420,6 +433,161 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	} else {
 		tr.matchTable(input, buf)
 	}
+}
+
+// scanRange16 runs the stop-byte automaton over input[i:to), starting in
+// state s, appending matches that end at or after minEmit to raw, which
+// is returned. Positions are absolute into input; the SWAR skip may read
+// (but not emit) past to. Loads use raw pointer arithmetic; see
+// matchStopByte.
+func (tr *Trie) scanRange16(input []byte, i, to int, s uint32, minEmit int, raw []uint64) []uint64 {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	c := tr.rootStopBytes[0]
+	cc := uint64(c) * swarOnes
+
+	inputLen := len(input)
+	for ; i < to; i++ {
+		if s == rootState && input[i] != c {
+		skip:
+			for k := 0; ; k++ {
+				if i+8 > inputLen {
+					for i < inputLen && input[i] != c {
+						i++
+					}
+					break
+				}
+				w := binary.LittleEndian.Uint64(input[i:]) ^ cc
+				if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
+					i += bits.TrailingZeros64(m) >> 3
+					break
+				}
+				i += 8
+				if k == 3 {
+					j := bytes.IndexByte(input[i:], c)
+					if j < 0 {
+						i = inputLen
+					} else {
+						i += j
+					}
+					break skip
+				}
+			}
+			if i >= to {
+				return raw
+			}
+		}
+
+		v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		s = v &^ (1 << 15)
+		if v&(1<<15) != 0 && i >= minEmit {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
+				raw = append(raw, uint64(i), dp)
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				raw = append(raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+			}
+		}
+	}
+	return raw
+}
+
+// matchDualStopByte16 scans the two halves of input with two independent
+// automaton cursors interleaved in one loop. The state-transition load
+// chain is the serial bottleneck of a single scan; two chains overlap
+// their L1 latencies. Lane B starts maxLen-1 bytes before the midpoint
+// (see matchParallel for why that overlap suffices) and emits only
+// matches ending at or after the midpoint, so rawA followed by rawB is
+// exactly a sequential scan's output. Loads use raw pointer arithmetic;
+// see matchStopByte.
+func (tr *Trie) matchDualStopByte16(input []byte, buf *matchBuf) {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	c := tr.rootStopBytes[0]
+	cc := uint64(c) * swarOnes
+
+	inputLen := len(input)
+	mid := inputLen / 2
+	startB := max(mid-int(tr.maxLen)+1, 0)
+
+	stopE := uint32(tr.stopEntry16)
+
+	sA, sB := rootState, rootState
+	iA, iB := 0, startB
+	rawA, rawB := buf.raw, buf.raw2
+
+	for iA < mid && iB < inputLen {
+		// Lane A: one bounded step (a transition, or up to 8 skipped bytes).
+		if sA == rootState && input[iA] != c {
+			if iA+8 <= inputLen {
+				w := binary.LittleEndian.Uint64(input[iA:]) ^ cc
+				if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
+					iA += bits.TrailingZeros64(m) >> 3
+				} else {
+					iA += 8
+				}
+			} else {
+				iA++
+			}
+		} else {
+			v := stopE
+			if sA != rootState {
+				v = uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sA)<<9+uintptr(input[iA])<<1)))
+			}
+			sA = v &^ (1 << 15)
+			if v&(1<<15) != 0 {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
+					rawA = append(rawA, uint64(iA), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iA++
+		}
+
+		// Lane B: same step shape.
+		if sB == rootState && input[iB] != c {
+			if iB+8 <= inputLen {
+				w := binary.LittleEndian.Uint64(input[iB:]) ^ cc
+				if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
+					iB += bits.TrailingZeros64(m) >> 3
+				} else {
+					iB += 8
+				}
+			} else {
+				iB++
+			}
+		} else {
+			v := stopE
+			if sB != rootState {
+				v = uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sB)<<9+uintptr(input[iB])<<1)))
+			}
+			sB = v &^ (1 << 15)
+			if v&(1<<15) != 0 && iB >= mid {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
+					rawB = append(rawB, uint64(iB), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iB++
+		}
+	}
+
+	// Finish whichever lane has input left.
+	rawA = tr.scanRange16(input, iA, mid, sA, 0, rawA)
+	rawB = tr.scanRange16(input, iB, inputLen, sB, mid, rawB)
+
+	// Concatenate: lane A ends < mid, lane B ends >= mid, so order is
+	// exactly the sequential scan's.
+	buf.raw = append(rawA, rawB...)
+	buf.raw2 = rawB[:0]
 }
 
 // matchStopByte16 is matchStopByte on the half-width failTrans16 table.
