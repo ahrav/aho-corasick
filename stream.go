@@ -3,6 +3,7 @@ package ahocorasick
 import (
 	"compress/gzip"
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
@@ -99,6 +100,14 @@ func (dec *decoder) decode() (*Trie, error) {
 	}
 	if err := binary.Read(r, binary.LittleEndian, &patternLen); err != nil {
 		return nil, err
+	}
+
+	// Decode operates on untrusted input. A well-formed trie has one row per
+	// state across all four arrays and at least the unused state 0 plus the
+	// root, so buildRootSkip can index failTrans[rootState]. Reject anything
+	// else with an error rather than panicking on a truncated or corrupt stream.
+	if failTransLen < 2 || dictLen != failTransLen || dictLinkLen != failTransLen || patternLen != failTransLen {
+		return nil, fmt.Errorf("ahocorasick: corrupt trie: inconsistent table lengths (dict=%d failTrans=%d dictLink=%d pattern=%d)", dictLen, failTransLen, dictLinkLen, patternLen)
 	}
 
 	// Allocate memory and read the actual data
