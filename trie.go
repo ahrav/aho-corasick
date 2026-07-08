@@ -10,6 +10,13 @@ import (
 const (
 	rootState uint32 = 1
 	nilState  uint32 = 0
+
+	// outputFlag is set on a failTrans entry when the target state emits
+	// at least one match (dict or dictLink). It rides along with the
+	// transition load, so the common no-match case needs no extra memory
+	// accesses. stateMask recovers the state id.
+	outputFlag uint32 = 1 << 31
+	stateMask  uint32 = outputFlag - 1
 )
 
 // Trie represents a trie of patterns with extra links as per the Aho-Corasick algorithm.
@@ -19,6 +26,11 @@ type Trie struct {
 	dict     []uint32
 	pattern  []uint32
 	dictLink []uint32
+
+	// dictPat[s] packs pattern[s] (high 32 bits) and dict[s] (low 32
+	// bits) so the emit path fetches both with a single load from one
+	// cache line.
+	dictPat []uint64
 
 	// rootStop[b] is 1 if byte b moves the automaton out of the root
 	// state, 0 if it self-loops. Runs of zero bytes can be skipped
@@ -38,13 +50,13 @@ type Trie struct {
 // matchBuf holds the per-call scratch for Match, recycled through a
 // pool: the returned buffer is acquired with one Get and released with
 // one Put via ReleaseMatches. During the scan, matches are recorded as
-// raw integer pairs (end position, and pattern id packed with match
-// length); appends of plain integers carry no pointers, so they stay off
-// the GC write-barrier path. The Match structs and the returned pointer
-// slice are materialized in one pass afterwards, when the final count is
-// known, so the arena never reallocates under live pointers.
+// raw integer pairs (end position, packed dictPat); appends of plain
+// integers carry no pointers, so they stay off the GC write-barrier
+// path. The Match structs and the returned pointer slice are
+// materialized in one pass afterwards, when the final count is known, so
+// the arena never reallocates under live pointers.
 type matchBuf struct {
-	raw   []uint64 // pairs: end position, packed pattern+length
+	raw   []uint64 // pairs: end position, dictPat
 	ptrs  []*Match
 	arena []Match
 }
@@ -96,12 +108,35 @@ func newBufPool() sync.Pool {
 	}
 }
 
+// addOutputFlags sets outputFlag on every transition whose target state
+// emits at least one match, and builds the packed dictPat array.
+// Idempotent; must be called after failTrans, dict, and dictLink are
+// fully populated.
+func (tr *Trie) addOutputFlags() {
+	var emits = make([]bool, len(tr.dict))
+	for s := range emits {
+		emits[s] = tr.dict[s] != 0 || tr.dictLink[s] != nilState
+	}
+	for s := range tr.failTrans {
+		for b := range 256 {
+			if emits[tr.failTrans[s][b]&stateMask] {
+				tr.failTrans[s][b] |= outputFlag
+			}
+		}
+	}
+
+	tr.dictPat = make([]uint64, len(tr.dict))
+	for s := range tr.dict {
+		tr.dictPat[s] = uint64(tr.pattern[s])<<32 | uint64(tr.dict[s])
+	}
+}
+
 // buildRootSkip derives the root self-loop byte set from failTrans.
 // Must be called after failTrans is fully populated.
 func (tr *Trie) buildRootSkip() {
 	tr.rootStopBytes = nil
 	for b := range 256 {
-		if tr.failTrans[rootState][b] != rootState {
+		if tr.failTrans[rootState][b]&stateMask != rootState {
 			tr.rootStop[b] = 1
 			tr.rootStopBytes = append(tr.rootStopBytes, byte(b))
 		} else {
@@ -172,8 +207,7 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 // vectorized bytes.IndexByte fallback for long gaps.
 func (tr *Trie) walkStopByte(input []byte, fn WalkFn) {
 	failTrans := tr.failTrans
-	dict := tr.dict
-	pattern := tr.pattern
+	dictPat := tr.dictPat
 	dictLink := tr.dictLink
 
 	c := tr.rootStopBytes[0]
@@ -216,15 +250,15 @@ func (tr *Trie) walkStopByte(input []byte, fn WalkFn) {
 			}
 		}
 
-		s = failTrans[s][input[i]]
-		ds := dict[s]
-		dl := dictLink[s]
-		if ds != 0 || dl != nilState {
-			if ds != 0 && !fn(uint32(i), ds, pattern[s]) {
+		v := failTrans[s][input[i]]
+		s = v & stateMask
+		if v&outputFlag != 0 {
+			if dp := dictPat[s]; uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 				return
 			}
-			for u := dl; u != nilState; u = dictLink[u] {
-				if !fn(uint32(i), dict[u], pattern[u]) {
+			for u := dictLink[s]; u != nilState; u = dictLink[u] {
+				dp := dictPat[u]
+				if !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 					return
 				}
 			}
@@ -236,8 +270,7 @@ func (tr *Trie) walkStopByte(input []byte, fn WalkFn) {
 // rootStop table to skip root self-loops.
 func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 	failTrans := tr.failTrans
-	dict := tr.dict
-	pattern := tr.pattern
+	dictPat := tr.dictPat
 	dictLink := tr.dictLink
 
 	s := rootState
@@ -278,15 +311,15 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 			}
 		}
 
-		s = failTrans[s][input[i]]
-		ds := dict[s]
-		dl := dictLink[s]
-		if ds != 0 || dl != nilState {
-			if ds != 0 && !fn(uint32(i), ds, pattern[s]) {
+		v := failTrans[s][input[i]]
+		s = v & stateMask
+		if v&outputFlag != 0 {
+			if dp := dictPat[s]; uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 				return
 			}
-			for u := dl; u != nilState; u = dictLink[u] {
-				if !fn(uint32(i), dict[u], pattern[u]) {
+			for u := dictLink[s]; u != nilState; u = dictLink[u] {
+				dp := dictPat[u]
+				if !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 					return
 				}
 			}
@@ -299,13 +332,7 @@ func (tr *Trie) Match(input []byte) []*Match {
 	buf := tr.bufPool.Get().(*matchBuf)
 	buf.reset()
 
-	// Record each match as a raw (end position, packed pattern+length)
-	// pair. Integer appends carry no pointers, so the scan never touches
-	// the GC write-barrier path.
-	tr.Walk(input, func(end, n, pattern uint32) bool {
-		buf.raw = append(buf.raw, uint64(end), uint64(pattern)<<32|uint64(n))
-		return true
-	})
+	tr.matchSeq(input, buf)
 
 	if len(buf.raw) == 0 {
 		tr.bufPool.Put(buf)
@@ -321,6 +348,121 @@ func (tr *Trie) Match(input []byte) []*Match {
 	// callers that hold one match long-term should copy its fields.
 	buf.ptrs[0].buf = buf
 	return buf.ptrs
+}
+
+// matchSeq scans input sequentially into buf.
+func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
+	if len(tr.rootStopBytes) == 1 {
+		tr.matchStopByte(input, buf)
+	} else {
+		tr.matchTable(input, buf)
+	}
+}
+
+// matchStopByte is the Match specialization of walkStopByte: matches are
+// appended straight to buf, avoiding an indirect callback call per match.
+func (tr *Trie) matchStopByte(input []byte, buf *matchBuf) {
+	failTrans := tr.failTrans
+	dictPat := tr.dictPat
+	dictLink := tr.dictLink
+
+	c := tr.rootStopBytes[0]
+	cc := uint64(c) * swarOnes
+
+	s := rootState
+
+	inputLen := len(input)
+	for i := 0; i < inputLen; i++ {
+		if s == rootState && input[i] != c {
+			// See walkStopByte for the skip strategy.
+		skip:
+			for k := 0; ; k++ {
+				if i+8 > inputLen {
+					for i < inputLen && input[i] != c {
+						i++
+					}
+					break
+				}
+				w := binary.LittleEndian.Uint64(input[i:]) ^ cc
+				if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
+					i += bits.TrailingZeros64(m) >> 3
+					break
+				}
+				i += 8
+				if k == 3 {
+					j := bytes.IndexByte(input[i:], c)
+					if j < 0 {
+						i = inputLen
+					} else {
+						i += j
+					}
+					break skip
+				}
+			}
+			if i == inputLen {
+				return
+			}
+		}
+
+		v := failTrans[s][input[i]]
+		s = v & stateMask
+		if v&outputFlag != 0 {
+			if dp := dictPat[s]; uint32(dp) != 0 {
+				buf.raw = append(buf.raw, uint64(i), dp)
+			}
+			for u := dictLink[s]; u != nilState; u = dictLink[u] {
+				buf.raw = append(buf.raw, uint64(i), dictPat[u])
+			}
+		}
+	}
+}
+
+// matchTable is the Match specialization of walkTable.
+func (tr *Trie) matchTable(input []byte, buf *matchBuf) {
+	failTrans := tr.failTrans
+	dictPat := tr.dictPat
+	dictLink := tr.dictLink
+
+	s := rootState
+
+	inputLen := len(input)
+
+	// Root self-loop skip gated on stop-byte density measured inline; see
+	// walkTable. Sample the first rootSkipSampleLen root-state bytes, and
+	// disable the skip for the remainder once density reaches ~1/16.
+	skip := true
+	sample := rootSkipSampleLen
+	var rootBytes, stopBytes int
+
+	for i := 0; i < inputLen; i++ {
+		if skip && s == rootState {
+			j := tr.skipRootTable(input, i)
+			if sample > 0 && j < inputLen {
+				// j-i self-looping bytes, then one stop byte at j.
+				rootBytes += j - i + 1
+				stopBytes++
+				sample -= j - i + 1
+				if sample <= 0 && stopBytes*16 >= rootBytes {
+					skip = false
+				}
+			}
+			i = j
+			if i == inputLen {
+				return
+			}
+		}
+
+		v := failTrans[s][input[i]]
+		s = v & stateMask
+		if v&outputFlag != 0 {
+			if dp := dictPat[s]; uint32(dp) != 0 {
+				buf.raw = append(buf.raw, uint64(i), dp)
+			}
+			for u := dictLink[s]; u != nilState; u = dictLink[u] {
+				buf.raw = append(buf.raw, uint64(i), dictPat[u])
+			}
+		}
+	}
 }
 
 // MatchFirst is the same as Match, but returns after first successful match.
