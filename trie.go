@@ -174,9 +174,11 @@ func (tr *Trie) MatchFirstString(input string) *Match {
 // Pass the exact slice returned by Match, at most once. After the call
 // the slice and every Match in it are invalid — the buffer may be handed
 // to a later Match and overwritten, so reading it or releasing it again
-// can corrupt an unrelated result. A nil or empty slice, or one whose
-// first element did not come from Match, is a no-op; note that a
-// sub-slice of a result still releases the whole underlying buffer.
+// can corrupt an unrelated result. The pool handle is anchored to the
+// batch's first element, so a nil/empty slice, a slice not obtained from
+// Match, or a tail sub-slice such as result[1:] is a no-op; a sub-slice
+// that includes the original first element (e.g. result[:k]) releases the
+// whole underlying buffer.
 func (tr *Trie) ReleaseMatches(matches []*Match) {
 	if len(matches) == 0 {
 		return
