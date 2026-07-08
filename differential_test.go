@@ -5,29 +5,35 @@ import (
 	"testing"
 )
 
-// naiveMatch is a reference implementation: for every position, try every
-// pattern by direct comparison. Returns (pos, pattern id, length) triples
-// ordered by end position, then by pattern length ascending (the order the
-// automaton reports overlapping matches at one end position is by suffix
-// length, i.e. shortest dictLink chain entry last; we sort instead).
+// naiveMatch is a reference implementation. For every end position it
+// reports the pattern ending there at each length, longest first, which
+// is exactly the automaton's emission order at one position (the state's
+// own longest match, then dictLinks in decreasing suffix length).
+//
+// Both callers pass a deduplicated pattern set, so at most one pattern
+// occupies any given (start, length): the substring at that span either
+// equals a pattern or it does not. That lets the inner scan over every
+// pattern collapse to one map lookup keyed on the substring — the
+// map[string] lookup does not allocate — turning an O(len·maxLen·patterns)
+// oracle with a string copy per check into O(len·maxLen). The output is
+// byte-for-byte identical to the naive triple loop for deduplicated input.
 func naiveMatch(patterns []string, input []byte) [][3]uint32 {
 	maxLen := 0
-	for _, p := range patterns {
+	pid := make(map[string]uint32, len(patterns))
+	for i, p := range patterns {
+		if _, ok := pid[p]; !ok {
+			pid[p] = uint32(i) // first index wins; deduped input has no ties
+		}
 		if len(p) > maxLen {
 			maxLen = len(p)
 		}
 	}
 	var out [][3]uint32
 	for end := 0; end < len(input); end++ {
-		// Collect all patterns ending at end, longest first (the automaton
-		// emits the state's own (longest) match first, then dictLinks in
-		// decreasing suffix length).
 		for l := min(end+1, maxLen); l >= 1; l-- {
 			start := end - l + 1
-			for pid, p := range patterns {
-				if len(p) == l && string(input[start:end+1]) == p {
-					out = append(out, [3]uint32{uint32(start), uint32(pid), uint32(l)})
-				}
+			if id, ok := pid[string(input[start:end+1])]; ok {
+				out = append(out, [3]uint32{uint32(start), id, uint32(l)})
 			}
 		}
 	}

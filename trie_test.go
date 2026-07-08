@@ -2,7 +2,6 @@ package ahocorasick
 
 import (
 	"bufio"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -181,7 +180,7 @@ func TestHedvig(t *testing.T) {
 	}
 	matches := NewTrieBuilder().AddString("Hedvig").Build().Match(ibsen)
 	if len(matches) != 134 {
-		fmt.Printf("expected to find 134 Hedvig's, got %d\n", len(matches))
+		t.Errorf("expected to find 134 Hedvig's, got %d\n", len(matches))
 	}
 }
 
