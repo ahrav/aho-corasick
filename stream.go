@@ -127,11 +127,13 @@ func (dec *decoder) decode() (*Trie, error) {
 		return nil, err
 	}
 
-	return &Trie{
+	trie := &Trie{
 		failTrans: failTrans,
 		dictLink:  dictLink,
 		dict:      dict,
 		pattern:   pattern,
 		bufPool:   newBufPool(),
-	}, nil
+	}
+	trie.buildRootSkip()
+	return trie, nil
 }
