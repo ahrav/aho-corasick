@@ -16,10 +16,6 @@ type Match struct {
 	buf *matchBuf
 }
 
-func newMatch(pos, pattern uint32, match []byte) *Match {
-	return &Match{pos: pos, pattern: pattern, match: match}
-}
-
 func newMatchString(pos, pattern uint32, match string) *Match {
 	return &Match{pos: pos, pattern: pattern, match: []byte(match)}
 }

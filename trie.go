@@ -47,7 +47,14 @@ func (b *matchBuf) materialize(input []byte) {
 	if cap(b.arena) < n {
 		b.arena = make([]Match, n)
 	} else {
+		// Clear the dropped tail before reslicing down: stale Match values
+		// in arena[n:] would otherwise keep the previous input alive via
+		// their match slices while the buffer sits idle in the pool.
+		old := b.arena
 		b.arena = b.arena[:n]
+		if len(old) > n {
+			clear(old[n:])
+		}
 	}
 	if cap(b.ptrs) < n {
 		b.ptrs = make([]*Match, n)
@@ -129,7 +136,10 @@ func (tr *Trie) Match(input []byte) []*Match {
 	buf.materialize(input)
 
 	// Stash the buffer handle in the first match so ReleaseMatches can
-	// recycle the whole buffer in one pool operation.
+	// recycle the whole buffer in one pool operation. A retained match
+	// therefore keeps the whole batch's scratch (raw, ptrs, arena) alive
+	// until ReleaseMatches or until the result is dropped and GC'd;
+	// callers that hold one match long-term should copy its fields.
 	buf.ptrs[0].buf = buf
 	return buf.ptrs
 }
@@ -157,9 +167,16 @@ func (tr *Trie) MatchFirstString(input string) *Match {
 	return tr.MatchFirst([]byte(input))
 }
 
-// ReleaseMatches returns the matches to the Trie's internal pool for reuse.
-// The matches must not be used after this call. Passing a slice not
-// obtained from Match (or already released) is a safe no-op.
+// ReleaseMatches returns the scratch buffer backing a Match result to the
+// Trie's pool for reuse. Releasing is optional: a result that is simply
+// dropped is reclaimed by the GC.
+//
+// Pass the exact slice returned by Match, at most once. After the call
+// the slice and every Match in it are invalid — the buffer may be handed
+// to a later Match and overwritten, so reading it or releasing it again
+// can corrupt an unrelated result. A nil or empty slice, or one whose
+// first element did not come from Match, is a no-op; note that a
+// sub-slice of a result still releases the whole underlying buffer.
 func (tr *Trie) ReleaseMatches(matches []*Match) {
 	if len(matches) == 0 {
 		return
