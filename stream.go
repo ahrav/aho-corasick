@@ -134,7 +134,10 @@ func (dec *decoder) decode() (*Trie, error) {
 		pattern:   pattern,
 		bufPool:   newBufPool(),
 	}
+	// Rebuild the derived acceleration tables (dictPat, failTrans16, root
+	// skip); they are recomputed on decode, not stored in the wire format.
 	trie.addOutputFlags()
 	trie.buildRootSkip()
+	trie.setStopEntry()
 	return trie, nil
 }
