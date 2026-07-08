@@ -134,6 +134,7 @@ func (dec *decoder) decode() (*Trie, error) {
 		pattern:   pattern,
 		bufPool:   newBufPool(),
 	}
+	trie.addOutputFlags()
 	trie.buildRootSkip()
 	return trie, nil
 }

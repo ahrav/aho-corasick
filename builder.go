@@ -200,6 +200,7 @@ func (tb *TrieBuilder) Build() *Trie {
 		}
 	}
 
+	trie.addOutputFlags()
 	trie.buildRootSkip()
 
 	return trie
