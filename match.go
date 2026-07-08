@@ -10,10 +10,14 @@ type Match struct {
 	pos     uint32
 	pattern uint32
 	match   []byte
+
+	// buf, set only on the first match of a batch, lets ReleaseMatches
+	// recycle the whole batch with a single pool operation.
+	buf *matchBuf
 }
 
 func newMatch(pos, pattern uint32, match []byte) *Match {
-	return &Match{pos, pattern, match}
+	return &Match{pos: pos, pattern: pattern, match: match}
 }
 
 func newMatchString(pos, pattern uint32, match string) *Match {
@@ -44,7 +48,8 @@ func (m *Match) MatchString() string {
 	return string(m.match)
 }
 
-// MatchEqual check whether two matches are equal (i.e. at same position, pattern and same pattern).
+// MatchEqual reports whether a and b have the same position, pattern id,
+// and matched bytes.
 func MatchEqual(a, b *Match) bool {
 	return a.pos == b.pos && a.pattern == b.pattern && bytes.Equal(a.match, b.match)
 }

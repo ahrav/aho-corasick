@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"os"
 	"strings"
-	"sync"
 )
 
 // state represents a node in the Aho-Corasick trie during construction.
@@ -178,13 +177,8 @@ func (tb *TrieBuilder) Build() *Trie {
 		pattern:   make([]uint32, numStates),
 	}
 
-	// Set up object pools for memory reuse.
-	trie.matchPool = sync.Pool{
-		New: func() any { return &[]*Match{} },
-	}
-	trie.matchStructPool = sync.Pool{
-		New: func() any { return new(Match) },
-	}
+	// Set up object pool for match buffer reuse.
+	trie.bufPool = newBufPool()
 
 	// Convert the state graph into arrays.
 	for i, s := range tb.states {

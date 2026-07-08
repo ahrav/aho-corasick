@@ -4,7 +4,6 @@ import (
 	"compress/gzip"
 	"encoding/binary"
 	"io"
-	"sync"
 )
 
 // Encode writes a Trie to w in gzip compressed binary format.
@@ -133,11 +132,6 @@ func (dec *decoder) decode() (*Trie, error) {
 		dictLink:  dictLink,
 		dict:      dict,
 		pattern:   pattern,
-		matchPool: sync.Pool{
-			New: func() any { return &[]*Match{} },
-		},
-		matchStructPool: sync.Pool{
-			New: func() any { return new(Match) },
-		},
+		bufPool:   newBufPool(),
 	}, nil
 }
