@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math/bits"
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -45,6 +46,10 @@ type Trie struct {
 	// the rootStop table. Empty for zero or several stop bytes.
 	rootStopBytes []byte
 
+	// maxLen is the longest pattern length. Parallel scans start each
+	// chunk maxLen-1 bytes early so boundary-spanning matches are found.
+	maxLen uint32
+
 	// failTrans16 is a half-width copy of failTrans used by the match
 	// loops when every state id fits in 15 bits (bit 15 carries the
 	// output flag). Rows are 512B instead of 1KB, halving the cache
@@ -62,12 +67,13 @@ type Trie struct {
 
 // matchBuf holds the per-call scratch for Match, recycled through a
 // pool: the returned buffer is acquired with one Get and released with
-// one Put via ReleaseMatches. During the scan, matches are recorded as
-// raw integer pairs (end position, packed dictPat); appends of plain
-// integers carry no pointers, so they stay off the GC write-barrier
-// path. The Match structs and the returned pointer slice are
-// materialized in one pass afterwards, when the final count is known, so
-// the arena never reallocates under live pointers.
+// one Put via ReleaseMatches. The parallel path additionally borrows and
+// returns one pooled buffer per worker. During the scan, matches are
+// recorded as raw integer pairs (end position, packed dictPat); appends
+// of plain integers carry no pointers, so they stay off the GC
+// write-barrier path. The Match structs and the returned pointer slice
+// are materialized in one pass afterwards, when the final count is
+// known, so the arena never reallocates under live pointers.
 type matchBuf struct {
 	raw   []uint64 // pairs: end position, dictPat
 	ptrs  []*Match
@@ -139,8 +145,12 @@ func (tr *Trie) addOutputFlags() {
 	}
 
 	tr.dictPat = make([]uint64, len(tr.dict))
+	tr.maxLen = 0
 	for s := range tr.dict {
 		tr.dictPat[s] = uint64(tr.pattern[s])<<32 | uint64(tr.dict[s])
+		if tr.dict[s] > tr.maxLen {
+			tr.maxLen = tr.dict[s]
+		}
 	}
 
 	tr.failTrans16 = nil
@@ -335,8 +345,20 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 	}
 }
 
+// parallelChunk is the minimum bytes of input per worker goroutine;
+// below it, goroutine startup outweighs the scan work.
+const parallelChunk = 8 << 10
+
 // Match runs the Aho-Corasick string-search algorithm on a byte input.
 func (tr *Trie) Match(input []byte) []*Match {
+	if len(input) >= 2*parallelChunk {
+		// More workers mainly adds wakeup and steal latency; cap at 8 to
+		// keep each chunk large enough to amortize goroutine startup.
+		if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, 8); p > 1 {
+			return tr.matchParallel(input, p)
+		}
+	}
+
 	buf := tr.bufPool.Get().(*matchBuf)
 	buf.reset()
 
@@ -436,6 +458,77 @@ func (tr *Trie) matchStopByte16(input []byte, buf *matchBuf) {
 			}
 		}
 	}
+}
+
+// matchParallel splits input across p goroutines. Each worker scans its
+// chunk plus the preceding maxLen-1 bytes. A match ending at or after
+// its chunk start is at most maxLen bytes long, so it begins within that
+// overlap; scanning the overlap from the root therefore reaches a state
+// that reports every such match exactly as a sequential scan would.
+// Matches ending inside the overlap belong to the previous chunk and are
+// dropped, so the concatenated per-chunk results equal a sequential
+// scan's output.
+func (tr *Trie) matchParallel(input []byte, p int) []*Match {
+	overlap := int(tr.maxLen) - 1
+	chunk := (len(input) + p - 1) / p
+	if overlap*4 > chunk {
+		// Overlap rescanning would dominate; not worth parallelizing.
+		p = 0
+	}
+
+	bufs := make([]*matchBuf, p)
+	var wg sync.WaitGroup
+	for k := 1; k < p; k++ {
+		start := k * chunk
+		end := min(start+chunk, len(input))
+		buf := tr.bufPool.Get().(*matchBuf)
+		buf.reset()
+		bufs[k] = buf
+		wg.Add(1)
+		go func(start, end int, buf *matchBuf) {
+			defer wg.Done()
+			scanStart := max(start-overlap, 0)
+			tr.matchSeq(input[scanStart:end], buf)
+			// Rebase positions to the full input and drop matches that
+			// end in the overlap (owned by the previous chunk). Entries
+			// are ordered by end position, so they form a prefix.
+			raw := buf.raw
+			drop := 0
+			for drop < len(raw) && int(raw[drop])+scanStart < start {
+				drop += 2
+			}
+			raw = raw[drop:]
+			for idx := 0; idx < len(raw); idx += 2 {
+				raw[idx] += uint64(scanStart)
+			}
+			buf.raw = raw
+		}(start, end, buf)
+	}
+
+	var main *matchBuf
+	if p > 0 {
+		main = tr.bufPool.Get().(*matchBuf)
+		main.reset()
+		tr.matchSeq(input[:min(chunk, len(input))], main)
+		wg.Wait()
+		for k := 1; k < p; k++ {
+			main.raw = append(main.raw, bufs[k].raw...)
+			bufs[k].raw = bufs[k].raw[:0]
+			tr.bufPool.Put(bufs[k])
+		}
+	} else {
+		main = tr.bufPool.Get().(*matchBuf)
+		main.reset()
+		tr.matchSeq(input, main)
+	}
+
+	if len(main.raw) == 0 {
+		tr.bufPool.Put(main)
+		return nil
+	}
+	main.materialize(input)
+	main.ptrs[0].buf = main
+	return main.ptrs
 }
 
 // matchStopByte is the Match specialization of walkStopByte: matches are
