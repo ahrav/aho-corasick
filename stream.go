@@ -106,8 +106,18 @@ func (dec *decoder) decode() (*Trie, error) {
 	// state across all four arrays and at least the unused state 0 plus the
 	// root, so buildRootSkip can index failTrans[rootState]. Reject anything
 	// else with an error rather than panicking on a truncated or corrupt stream.
+	//
+	// maxDecodeStates also bounds the up-front allocation: failTrans costs 1KB
+	// per state, so an internally consistent but huge count would otherwise
+	// reach make(...) and panic on slice-allocation limits before any data is
+	// read. The bound is far above any realistic automaton (the full NSF word
+	// list in test_data is ~1.2M states), so it never rejects a real trie.
+	const maxDecodeStates = 1 << 24
 	if failTransLen < 2 || dictLen != failTransLen || dictLinkLen != failTransLen || patternLen != failTransLen {
 		return nil, fmt.Errorf("ahocorasick: corrupt trie: inconsistent table lengths (dict=%d failTrans=%d dictLink=%d pattern=%d)", dictLen, failTransLen, dictLinkLen, patternLen)
+	}
+	if failTransLen > maxDecodeStates {
+		return nil, fmt.Errorf("ahocorasick: corrupt trie: %d states exceeds decode limit %d", failTransLen, maxDecodeStates)
 	}
 
 	// Allocate memory and read the actual data
