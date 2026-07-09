@@ -239,11 +239,14 @@ func TestRootSkipSplitBoundaries(t *testing.T) {
 	}
 }
 
-// TestRootSkipDensityGate exercises both sides of walkTable's density gate:
-// a low-density input (sparse stop bytes, long self-loop runs) engages the
-// skip, and a high-density input (nearly every byte leaves the root)
-// disables it. The gate only toggles an optimization, so Match output must
-// equal the naive reference either way. Patterns start with several distinct
+// TestRootSkipDensityGate checks that walkTable's density gate — an
+// output-invisible optimization that only toggles whether root self-loops are
+// skipped — never changes Match output. It feeds a low-density input (sparse
+// stop bytes, long self-loop runs) and a high-density input (nearly every byte
+// leaves the root) and asserts both still equal the naive reference. The
+// gate's disable decision itself is not observable in Match output, so it is
+// asserted directly in TestRootSkipSamplerDisableDecision; this test only
+// guards correctness across densities. Patterns start with several distinct
 // bytes so the trie takes the multi-stop-byte walkTable path where the gate
 // lives.
 func TestRootSkipDensityGate(t *testing.T) {
@@ -257,7 +260,7 @@ func TestRootSkipDensityGate(t *testing.T) {
 	}
 
 	// High density: cycle through the stop-byte first letters so almost
-	// every byte leaves the root and the gate disables the skip.
+	// every byte leaves the root.
 	high := make([]byte, n)
 	firsts := []byte{'a', 'b', 'c', 'd', 'e'}
 	for i := range high {
@@ -268,10 +271,43 @@ func TestRootSkipDensityGate(t *testing.T) {
 		copy(high[pos:], "banana")
 	}
 
-	t.Run("low_density_skip_engaged", func(t *testing.T) {
+	t.Run("low_density", func(t *testing.T) {
 		checkAgainstNaive(t, patterns, low)
 	})
-	t.Run("high_density_skip_disabled", func(t *testing.T) {
+	t.Run("high_density", func(t *testing.T) {
 		checkAgainstNaive(t, patterns, high)
 	})
+}
+
+// TestRootSkipSamplerDisableDecision is a white-box check of walkTable's
+// density gate. The gate is invisible in Match output, so it cannot be
+// verified through checkAgainstNaive; instead this drives the exact sampler
+// walkTable uses and asserts the disable decision on both sides of the ~1/16
+// break-even.
+func TestRootSkipSamplerDisableDecision(t *testing.T) {
+	// High density: each run is one self-loop byte then a stop byte (gap=1 =>
+	// 2 bytes/run at 1/2 density, far above 1/16). Once the budget is spent,
+	// the skip must be disabled.
+	high := rootSkipSampler{budget: rootSkipSampleLen}
+	disabled := false
+	for i := 0; i < rootSkipSampleLen; i++ {
+		if high.observe(1) {
+			disabled = true
+		}
+	}
+	if !disabled || !high.disabled {
+		t.Fatalf("high density: gate should disable the skip, got disabled=%v", high.disabled)
+	}
+
+	// Low density: long self-loop runs between stop bytes (gap=1024 => ~1/1025
+	// density, far below 1/16). The skip must stay enabled.
+	low := rootSkipSampler{budget: rootSkipSampleLen}
+	for i := 0; i < 100; i++ {
+		if low.observe(1024) {
+			t.Fatalf("low density: gate disabled the skip after run %d", i)
+		}
+	}
+	if low.disabled {
+		t.Fatal("low density: gate should leave the skip enabled")
+	}
 }

@@ -107,12 +107,19 @@ func (dec *decoder) decode() (*Trie, error) {
 	// root, so buildRootSkip can index failTrans[rootState]. Reject anything
 	// else with an error rather than panicking on a truncated or corrupt stream.
 	//
-	// maxDecodeStates also bounds the up-front allocation: failTrans costs 1KB
-	// per state, so an internally consistent but huge count would otherwise
-	// reach make(...) and panic on slice-allocation limits before any data is
-	// read. The bound is far above any realistic automaton (the full NSF word
-	// list in test_data is ~1.2M states), so it never rejects a real trie.
-	const maxDecodeStates = 1 << 24
+	// The dominant allocation is failTrans: one [256]uint32 row (1 KiB) per
+	// state, read straight into place below (no transient flat copy), so the
+	// state count is also the peak allocation. Bound it by an explicit byte
+	// budget so the guard matches the real allocation size and a
+	// corrupt-but-consistent length cannot OOM the process before any
+	// transition data is read. The budget is far above any realistic automaton
+	// (the full NSF word list in test_data is ~1.2M states ≈ 1.2 GiB of rows),
+	// so it never rejects a real trie.
+	const (
+		failTransRowBytes = 256 * 4 // one [256]uint32 transition row
+		maxDecodeBytes    = 4 << 30 // 4 GiB budget for failTrans rows
+		maxDecodeStates   = maxDecodeBytes / failTransRowBytes
+	)
 	if failTransLen < 2 || dictLen != failTransLen || dictLinkLen != failTransLen || patternLen != failTransLen {
 		return nil, fmt.Errorf("ahocorasick: corrupt trie: inconsistent table lengths (dict=%d failTrans=%d dictLink=%d pattern=%d)", dictLen, failTransLen, dictLinkLen, patternLen)
 	}
@@ -126,14 +133,14 @@ func (dec *decoder) decode() (*Trie, error) {
 		return nil, err
 	}
 
-	// Read and reshape failTrans
+	// Read failTrans one row at a time straight into place. Reading the whole
+	// table into a temporary flat slice first would double the peak allocation
+	// (another maxDecodeBytes), so decode row by row instead.
 	failTrans := make([][256]uint32, failTransLen)
-	flatFailTrans := make([]uint32, failTransLen*256)
-	if err := binary.Read(r, binary.LittleEndian, flatFailTrans); err != nil {
-		return nil, err
-	}
 	for i := range failTrans {
-		copy(failTrans[i][:], flatFailTrans[i*256:(i+1)*256])
+		if err := binary.Read(r, binary.LittleEndian, failTrans[i][:]); err != nil {
+			return nil, err
+		}
 	}
 
 	dictLink := make([]uint32, dictLinkLen)
