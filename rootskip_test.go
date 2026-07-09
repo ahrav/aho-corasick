@@ -196,26 +196,44 @@ func TestRootSkipSplitBoundaries(t *testing.T) {
 			maxLen = len(p)
 		}
 	}
-	for _, sz := range []int{1100, 2048, 20000, 50000, 131072} {
+	// planted returns a fresh sz-byte self-loop haystack with s copied in at
+	// pos, so each boundary case is validated in its own buffer and no plant
+	// overwrites another.
+	planted := func(sz, pos int, s string) []byte {
 		in := bytesFill(sz, ' ')
-		plant := func(pos int, s string) {
-			if pos >= 0 && pos+len(s) <= len(in) {
-				copy(in[pos:], s)
-			}
+		if pos >= 0 && pos+len(s) <= len(in) {
+			copy(in[pos:], s)
 		}
+		return in
+	}
+	for _, sz := range []int{1100, 2048, 20000, 50000, 131072} {
 		mid := sz / 2
 		for d := -maxLen; d <= maxLen; d++ {
-			plant(mid+d, "needle")
+			in := planted(sz, mid+d, "needle")
+			t.Run(fmt.Sprintf("sz=%d/mid%+d", sz, d), func(t *testing.T) {
+				checkAgainstNaive(t, patterns, in)
+			})
 		}
 		for w := 1; w <= 8; w++ {
 			cb := sz * w / 8
-			plant(cb-3, "abcdefghij")
-			plant(cb, "xyz")
+			for _, tc := range []struct {
+				pos int
+				s   string
+			}{
+				{cb - 3, "abcdefghij"},
+				{cb, "xyz"},
+			} {
+				in := planted(sz, tc.pos, tc.s)
+				t.Run(fmt.Sprintf("sz=%d/cb%d/%s", sz, w, tc.s), func(t *testing.T) {
+					checkAgainstNaive(t, patterns, in)
+				})
+			}
 		}
-		plant(sz-len("needle"), "needle") // ends exactly at input end
-		plant(0, "needle")                // starts at input start
-		t.Run(fmt.Sprintf("sz=%d", sz), func(t *testing.T) {
-			checkAgainstNaive(t, patterns, in)
+		t.Run(fmt.Sprintf("sz=%d/end", sz), func(t *testing.T) {
+			checkAgainstNaive(t, patterns, planted(sz, sz-len("needle"), "needle"))
+		})
+		t.Run(fmt.Sprintf("sz=%d/start", sz), func(t *testing.T) {
+			checkAgainstNaive(t, patterns, planted(sz, 0, "needle"))
 		})
 	}
 }
