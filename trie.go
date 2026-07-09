@@ -124,6 +124,11 @@ const (
 	swarHighs uint64 = swarOnes << 7
 )
 
+// rootSkipSampleLen bounds how many root-state bytes walkTable samples,
+// inline, before it commits to whether the root self-loop skip pays off at
+// the input's stop-byte density.
+const rootSkipSampleLen = 4096
+
 // skipRootTable returns the position of the first byte at or after i
 // that leaves the root state, or len(input) if there is none, using the
 // rootStop lookup table.
@@ -238,12 +243,36 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 	s := rootState
 
 	inputLen := len(input)
+
+	// Root self-loop skip, gated on stop-byte density measured INLINE so an
+	// early-terminating caller (Walk whose callback returns false, as
+	// MatchFirst does) never pays an up-front prefix scan. Begin optimistic;
+	// over the first rootSkipSampleLen root-state bytes, accumulate how many
+	// leave the root (stop bytes). If that density reaches the measured
+	// break-even (~1/16), where the skip machinery costs about as much as the
+	// plain loop, disable it for the remainder. The sampled bytes are ones the
+	// skip reads anyway, so this adds no extra reads and nothing before the
+	// first match.
+	skip := true
+	sample := rootSkipSampleLen
+	var rootBytes, stopBytes int
+
 	for i := 0; i < inputLen; i++ {
-		if s == rootState {
+		if skip && s == rootState {
 			// Fast path: while at the root, skip bytes that self-loop.
 			// The root state never produces a match, so no dict checks
 			// are needed until we leave it.
-			i = tr.skipRootTable(input, i)
+			j := tr.skipRootTable(input, i)
+			if sample > 0 && j < inputLen {
+				// j-i self-looping bytes, then one stop byte at j.
+				rootBytes += j - i + 1
+				stopBytes++
+				sample -= j - i + 1
+				if sample <= 0 && stopBytes*16 >= rootBytes {
+					skip = false
+				}
+			}
+			i = j
 			if i == inputLen {
 				return
 			}
