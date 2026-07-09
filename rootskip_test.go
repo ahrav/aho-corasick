@@ -310,4 +310,30 @@ func TestRootSkipSamplerDisableDecision(t *testing.T) {
 	if low.disabled {
 		t.Fatal("low density: gate should leave the skip enabled")
 	}
+
+	// Boundary: the decision flips at the exact 1/16 break-even. gap=15 gives
+	// density 1/16 (stopBytes*16 == rootBytes) and must disable; gap=16 gives
+	// 1/17, just below, and must stay enabled. These straddle the exact
+	// stopBytes*16 >= rootBytes threshold so a regression in that arithmetic is
+	// caught, unlike the extreme cases above.
+	atBreakeven := rootSkipSampler{budget: rootSkipSampleLen}
+	disabled = false
+	for i := 0; i < rootSkipSampleLen; i++ {
+		if atBreakeven.observe(15) {
+			disabled = true
+		}
+	}
+	if !disabled || !atBreakeven.disabled {
+		t.Fatalf("gap=15 (1/16 density): gate should disable the skip, got disabled=%v", atBreakeven.disabled)
+	}
+
+	belowBreakeven := rootSkipSampler{budget: rootSkipSampleLen}
+	for i := 0; i < rootSkipSampleLen; i++ {
+		if belowBreakeven.observe(16) {
+			t.Fatalf("gap=16 (below 1/16): gate disabled the skip after run %d", i)
+		}
+	}
+	if belowBreakeven.disabled {
+		t.Fatal("gap=16 (below 1/16): gate should leave the skip enabled")
+	}
 }
