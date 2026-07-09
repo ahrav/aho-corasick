@@ -182,12 +182,13 @@ func TestRootSkipMatchAtExactEnd(t *testing.T) {
 }
 
 // TestRootSkipSplitBoundaries plants matches at and around the input midpoint
-// and every 1/8 chunk boundary, over inputs large enough to trigger the
-// dual-cursor scan (>1KB) and the parallel scan (>16KB). On this branch these
-// route through the sequential path; on the parallel and dual-cursor PRs the
-// split arithmetic decides which scan reports a match ending near a boundary,
-// and an off-by-one there drops or duplicates it. Matches sit at every offset
-// within maxLen of a boundary so a straddling match is exercised on both sides.
+// and every 1/8 chunk boundary, over inputs spanning the size thresholds at
+// which a chunked or parallel scan may partition the work (>1KB and >16KB). A
+// match that straddles a chunk boundary must be reported exactly once —
+// neither dropped nor duplicated — however the input is partitioned; an
+// off-by-one in the boundary ownership arithmetic breaks that. Matches sit at
+// every offset within maxLen of a boundary so a straddling match is exercised
+// on both sides.
 func TestRootSkipSplitBoundaries(t *testing.T) {
 	patterns := []string{"needle", "haystackNEEDLE", "abcdefghij", "xyz"}
 	maxLen := 0
