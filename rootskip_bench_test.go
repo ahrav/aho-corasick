@@ -196,7 +196,10 @@ func BenchmarkRootSkip_DensitySweep_MultiByte(b *testing.B) {
 
 // BenchmarkRootSkip_CardinalitySweep holds the haystack fixed (Ibsen) and
 // grows the number of distinct pattern first bytes from 1 to 26, crossing the
-// walkStopByte (1) to walkTable (>1) boundary.
+// walkStopByte (1) to walkTable (>1) boundary. Natural-letter frequencies are
+// skewed, so adding first bytes also raises the haystack's stop-byte density;
+// the sweep therefore reports the measured density in each subtest label so
+// the cardinality and density effects can be told apart when reading results.
 func BenchmarkRootSkip_CardinalitySweep(b *testing.B) {
 	all := benchReadLines(b, "./test_data/NSF-ordlisten.cleaned.txt", 0)
 	hay := benchReadFile(b, "./test_data/Ibsen.txt")
@@ -228,8 +231,21 @@ func BenchmarkRootSkip_CardinalitySweep(b *testing.B) {
 		if got < card {
 			continue // not enough distinct first letters available
 		}
+		// Measure the actual stop-byte density this pattern set induces on
+		// the fixed haystack, so the confound with cardinality is visible.
+		var stop [256]bool
+		for _, p := range pats {
+			stop[p[0]] = true
+		}
+		stopCount := 0
+		for _, c := range hay {
+			if stop[c] {
+				stopCount++
+			}
+		}
+		densityPct := stopCount * 100 / len(hay)
 		trie := NewTrieBuilder().AddStrings(pats).Build()
-		b.Run(itoaCard(card), func(b *testing.B) { benchMatchOver(b, trie, hay) })
+		b.Run(itoaCard(card)+"/"+itoaPct(densityPct), func(b *testing.B) { benchMatchOver(b, trie, hay) })
 	}
 }
 

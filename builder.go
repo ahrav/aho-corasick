@@ -169,6 +169,14 @@ func (tb *TrieBuilder) Build() *Trie {
 
 	numStates := len(tb.states)
 
+	// Packed transitions reserve the high bit for outputFlag (see trie.go),
+	// leaving 31 bits for state ids. Refuse to build a trie whose ids would
+	// collide with the flag. Unreachable in practice: the builder needs
+	// hundreds of bytes per state, so >2^31 states means hundreds of GB.
+	if uint64(numStates) > uint64(stateMask)+1 {
+		panic("ahocorasick: too many states to build trie (max 2^31)")
+	}
+
 	// Renumber states breadth-first. The automaton spends nearly all
 	// its time in shallow states; giving them adjacent ids packs their
 	// transition rows into a small contiguous prefix of failTrans.
