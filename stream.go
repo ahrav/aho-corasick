@@ -52,9 +52,16 @@ func (enc *encoder) encode(trie *Trie) error {
 		return err
 	}
 
-	// Flatten and write failTrans
+	// Flatten and write failTrans. In-memory entries carry outputFlag bits
+	// (see addOutputFlags); mask them off so the serialized format stays
+	// plain state ids, compatible with readers that predate the flags.
+	// Decode re-derives the flags.
+	var row [256]uint32
 	for _, arr := range trie.failTrans {
-		if err := binary.Write(w, binary.LittleEndian, arr[:]); err != nil {
+		for i, v := range arr {
+			row[i] = v & stateMask
+		}
+		if err := binary.Write(w, binary.LittleEndian, row[:]); err != nil {
 			return err
 		}
 	}
@@ -132,6 +139,14 @@ func (dec *decoder) decode() (*Trie, error) {
 	if err := binary.Read(r, binary.LittleEndian, flatFailTrans); err != nil {
 		return nil, err
 	}
+	// Transition targets come from an untrusted stream and are used as
+	// indexes by addOutputFlags and the scan loops. Entries must be plain
+	// state ids: in range and without flag bits (Encode strips them).
+	for i, v := range flatFailTrans {
+		if uint64(v) >= failTransLen {
+			return nil, fmt.Errorf("ahocorasick: corrupt trie: transition %d targets state %d, want < %d states", i, v, failTransLen)
+		}
+	}
 	for i := range failTrans {
 		copy(failTrans[i][:], flatFailTrans[i*256:(i+1)*256])
 	}
@@ -139,6 +154,13 @@ func (dec *decoder) decode() (*Trie, error) {
 	dictLink := make([]uint32, dictLinkLen)
 	if err := binary.Read(r, binary.LittleEndian, dictLink); err != nil {
 		return nil, err
+	}
+	// dictLink entries are chased and indexed during matching; bound them
+	// the same way.
+	for i, v := range dictLink {
+		if uint64(v) >= failTransLen {
+			return nil, fmt.Errorf("ahocorasick: corrupt trie: dictLink %d targets state %d, want < %d states", i, v, failTransLen)
+		}
 	}
 
 	pattern := make([]uint32, patternLen)
