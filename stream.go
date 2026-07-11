@@ -71,9 +71,16 @@ func (enc *encoder) encode(trie *Trie) error {
 		return err
 	}
 
-	// Flatten and write failTrans
+	// Flatten and write failTrans. In-memory entries carry outputFlag bits
+	// (see addOutputFlags); mask them off so the serialized format stays
+	// plain state ids, compatible with readers that predate the flags.
+	// Decode re-derives the flags.
+	var row [256]uint32
 	for _, arr := range trie.failTrans {
-		if err := binary.Write(w, binary.LittleEndian, arr[:]); err != nil {
+		for i, v := range arr {
+			row[i] = v & stateMask
+		}
+		if err := binary.Write(w, binary.LittleEndian, row[:]); err != nil {
 			return err
 		}
 	}
@@ -139,7 +146,11 @@ func (dec *decoder) decode(maxStates int) (*Trie, error) {
 	if failTransLen < 2 || dictLen != failTransLen || dictLinkLen != failTransLen || patternLen != failTransLen {
 		return nil, fmt.Errorf("ahocorasick: corrupt trie: inconsistent table lengths (dict=%d failTrans=%d dictLink=%d pattern=%d)", dictLen, failTransLen, dictLinkLen, patternLen)
 	}
-	if failTransLen > uint64(maxStates) {
+	// Packed transitions reserve the high bit for outputFlag (see trie.go),
+	// so state ids must fit in stateMask regardless of the caller's memory
+	// budget. The default DecodeMaxStates sits far below this ceiling; the
+	// check matters only for callers passing a larger custom limit.
+	if failTransLen > uint64(maxStates) || failTransLen > uint64(stateMask)+1 {
 		return nil, fmt.Errorf("ahocorasick: corrupt trie: %d states exceeds decode limit %d", failTransLen, maxStates)
 	}
 
@@ -164,11 +175,47 @@ func (dec *decoder) decode(maxStates int) (*Trie, error) {
 		if err := binary.Read(r, binary.LittleEndian, failTrans[i][:]); err != nil {
 			return nil, err
 		}
+		// Transition targets come from an untrusted stream and are used as
+		// indexes by addOutputFlags and the scan loops. Entries must be
+		// plain state ids: in range and without flag bits (Encode strips
+		// them).
+		for _, v := range failTrans[i] {
+			if uint64(v) >= failTransLen {
+				return nil, fmt.Errorf("ahocorasick: corrupt trie: state %d transition targets state %d, want < %d states", i, v, failTransLen)
+			}
+		}
 	}
 
 	dictLink := make([]uint32, dictLinkLen)
 	if err := binary.Read(r, binary.LittleEndian, dictLink); err != nil {
 		return nil, err
+	}
+	// dictLink entries are chased and indexed during matching; bound them
+	// the same way.
+	for i, v := range dictLink {
+		if uint64(v) >= failTransLen {
+			return nil, fmt.Errorf("ahocorasick: corrupt trie: dictLink %d targets state %d, want < %d states", i, v, failTransLen)
+		}
+	}
+	// A dictLink cycle (e.g. 5 -> 7 -> 5) passes the bounds check but
+	// would hang the emit loops, which chase chains until nilState.
+	// Verify every chain terminates; memoizing resolved states keeps the
+	// pass O(states). A terminating chain visits distinct unresolved
+	// states, so a path as long as the table proves a repeat.
+	resolved := make([]bool, dictLinkLen)
+	resolved[nilState] = true
+	path := make([]uint32, 0, 64)
+	for s := range dictLink {
+		path = path[:0]
+		for u := uint32(s); !resolved[u]; u = dictLink[u] {
+			if len(path) == len(dictLink) {
+				return nil, fmt.Errorf("ahocorasick: corrupt trie: dictLink chain from state %d cycles", s)
+			}
+			path = append(path, u)
+		}
+		for _, p := range path {
+			resolved[p] = true
+		}
 	}
 
 	pattern := make([]uint32, patternLen)
@@ -183,6 +230,7 @@ func (dec *decoder) decode(maxStates int) (*Trie, error) {
 		pattern:   pattern,
 		bufPool:   newBufPool(),
 	}
+	trie.addOutputFlags()
 	trie.buildRootSkip()
 	return trie, nil
 }

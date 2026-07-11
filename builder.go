@@ -166,6 +166,15 @@ func (tb *TrieBuilder) Build() *Trie {
 	tb.computeDictLinks()
 
 	numStates := len(tb.states)
+
+	// Packed transitions reserve the high bit for outputFlag (see trie.go),
+	// leaving 31 bits for state ids. Refuse to build a trie whose ids would
+	// collide with the flag. Unreachable in practice: the builder needs
+	// hundreds of bytes per state, so >2^31 states means hundreds of GB.
+	if uint64(numStates) > uint64(stateMask)+1 {
+		panic("ahocorasick: too many states to build trie (max 2^31)")
+	}
+
 	trans := make([][256]uint32, numStates)
 	failLink := make([]uint32, numStates)
 
@@ -200,6 +209,7 @@ func (tb *TrieBuilder) Build() *Trie {
 		}
 	}
 
+	trie.addOutputFlags()
 	trie.buildRootSkip()
 
 	return trie
