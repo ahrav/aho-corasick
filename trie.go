@@ -49,6 +49,8 @@ type Trie struct {
 	// loops when every state id fits in 15 bits (bit 15 carries the
 	// output flag). Rows are 512B instead of 1KB, halving the cache
 	// footprint of the table the serial dependency chain loads from.
+	// Built only when the single-stop-byte 16-bit matcher can use it
+	// (see buildFailTrans16); nil otherwise.
 	failTrans16 []uint16
 
 	// stopEntry16 is failTrans16[root][stopByte] when there is a single
@@ -142,25 +144,36 @@ func (tr *Trie) addOutputFlags() {
 	for s := range tr.dict {
 		tr.dictPat[s] = uint64(tr.pattern[s])<<32 | uint64(tr.dict[s])
 	}
+}
 
+// buildFailTrans16 builds the half-width transition table, but only when
+// the match loops can actually use it: matchSeq takes the 16-bit path
+// solely through matchStopByte16, which requires every state id to fit in
+// 15 bits AND a single root stop byte. Building it unconditionally would
+// retain 512B per state of dead weight on multi-stop-byte tries (e.g.
+// ~10MB on a 20K-state dictionary with several initial bytes). Must run
+// after addOutputFlags (reads the flag bits) and buildRootSkip (reads
+// rootStopBytes).
+func (tr *Trie) buildFailTrans16() {
 	tr.failTrans16 = nil
-	if len(tr.failTrans) <= 1<<15 {
-		tr.failTrans16 = make([]uint16, len(tr.failTrans)*256)
-		for s := range tr.failTrans {
-			for b := range 256 {
-				v := tr.failTrans[s][b]
-				w := uint16(v & stateMask)
-				if v&outputFlag != 0 {
-					w |= 1 << 15
-				}
-				tr.failTrans16[s<<8+b] = w
+	if len(tr.failTrans) > 1<<15 || len(tr.rootStopBytes) != 1 {
+		return
+	}
+	tr.failTrans16 = make([]uint16, len(tr.failTrans)*256)
+	for s := range tr.failTrans {
+		for b := range 256 {
+			v := tr.failTrans[s][b]
+			w := uint16(v & stateMask)
+			if v&outputFlag != 0 {
+				w |= 1 << 15
 			}
+			tr.failTrans16[s<<8+b] = w
 		}
 	}
 }
 
 // setStopEntry caches the root transition on the single stop byte.
-// Must run after both buildRootSkip and the failTrans16 build.
+// Must run after both buildRootSkip and buildFailTrans16.
 func (tr *Trie) setStopEntry() {
 	tr.stopEntry16 = 0
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {

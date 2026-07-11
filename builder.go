@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/hex"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -180,12 +181,26 @@ func (tb *TrieBuilder) Build() *Trie {
 	// Renumber states breadth-first. The automaton spends nearly all
 	// its time in shallow states; giving them adjacent ids packs their
 	// transition rows into a small contiguous prefix of failTrans.
+	//
+	// Children are visited in byte order: trans is a Go map, and ranging
+	// it directly would assign ids in randomized map order, making the
+	// dict/dictLink/failTrans arrays — and therefore Encode output —
+	// differ between builds of the same pattern set. Fixed order keeps
+	// serialized tries reproducible (checksums, cache keys).
 	newID := make([]uint32, numStates)
 	order := make([]*state, 0, numStates)
 	order = append(order, tb.states[0], tb.root)
 	newID[tb.root.id] = 1
+	keys := make([]byte, 0, 256)
 	for qi := 1; qi < len(order); qi++ {
-		for _, t := range order[qi].trans {
+		s := order[qi]
+		keys = keys[:0]
+		for b := range s.trans {
+			keys = append(keys, b)
+		}
+		slices.Sort(keys)
+		for _, b := range keys {
+			t := s.trans[b]
 			newID[t.id] = uint32(len(order))
 			order = append(order, t)
 		}
@@ -218,6 +233,7 @@ func (tb *TrieBuilder) Build() *Trie {
 
 	trie.addOutputFlags()
 	trie.buildRootSkip()
+	trie.buildFailTrans16()
 	trie.setStopEntry()
 
 	return trie

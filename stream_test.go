@@ -278,3 +278,32 @@ func TestDecodeTruncatedBeforeFailTrans(t *testing.T) {
 		t.Fatal("expected error for stream truncated before failTrans, got nil")
 	}
 }
+
+// TestEncodeDeterministic verifies that building the same pattern set twice
+// yields byte-identical serialized tries. BFS renumbering in Build visits
+// children in byte order rather than Go map order, so state ids — and thus
+// the encoded dict/dictLink/failTrans arrays — must not vary between runs.
+// Reproducible artifacts matter for checksums and cache keys.
+func TestEncodeDeterministic(t *testing.T) {
+	// Enough branching (shared prefixes, many distinct first bytes) that
+	// randomized map iteration would almost surely produce different ids.
+	patterns := []string{
+		"or", "orb", "orbit", "amet", "ambit", "gravel", "grave",
+		"zebra", "zeal", "quark", "quartz", "night", "nickel",
+		"he", "she", "his", "hers", "hi", "them", "then", "there",
+	}
+
+	var first bytes.Buffer
+	if err := Encode(&first, NewTrieBuilder().AddStrings(patterns).Build()); err != nil {
+		t.Fatal(err)
+	}
+	for run := 1; run < 5; run++ {
+		var again bytes.Buffer
+		if err := Encode(&again, NewTrieBuilder().AddStrings(patterns).Build()); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(first.Bytes(), again.Bytes()) {
+			t.Fatalf("run %d: encoded trie differs from first build of the same patterns", run)
+		}
+	}
+}
