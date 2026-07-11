@@ -182,12 +182,13 @@ func TestRootSkipMatchAtExactEnd(t *testing.T) {
 }
 
 // TestRootSkipSplitBoundaries plants matches at and around the input midpoint
-// and every 1/8 chunk boundary, over inputs large enough to trigger the
-// dual-cursor scan (>1KB) and the parallel scan (>16KB). On this branch these
-// route through the sequential path; on the parallel and dual-cursor PRs the
-// split arithmetic decides which scan reports a match ending near a boundary,
-// and an off-by-one there drops or duplicates it. Matches sit at every offset
-// within maxLen of a boundary so a straddling match is exercised on both sides.
+// and every 1/8 chunk boundary, over inputs spanning the size thresholds at
+// which a chunked or parallel scan may partition the work (>1KB and >16KB). A
+// match that straddles a chunk boundary must be reported exactly once —
+// neither dropped nor duplicated — however the input is partitioned; an
+// off-by-one in the boundary ownership arithmetic breaks that. Matches sit at
+// every offset within maxLen of a boundary so a straddling match is exercised
+// on both sides.
 func TestRootSkipSplitBoundaries(t *testing.T) {
 	patterns := []string{"needle", "haystackNEEDLE", "abcdefghij", "xyz"}
 	maxLen := 0
@@ -196,35 +197,56 @@ func TestRootSkipSplitBoundaries(t *testing.T) {
 			maxLen = len(p)
 		}
 	}
-	for _, sz := range []int{1100, 2048, 20000, 50000, 131072} {
+	// planted returns a fresh sz-byte self-loop haystack with s copied in at
+	// pos, so each boundary case is validated in its own buffer and no plant
+	// overwrites another.
+	planted := func(sz, pos int, s string) []byte {
 		in := bytesFill(sz, ' ')
-		plant := func(pos int, s string) {
-			if pos >= 0 && pos+len(s) <= len(in) {
-				copy(in[pos:], s)
-			}
+		if pos >= 0 && pos+len(s) <= len(in) {
+			copy(in[pos:], s)
 		}
+		return in
+	}
+	for _, sz := range []int{1100, 2048, 20000, 50000, 131072} {
 		mid := sz / 2
 		for d := -maxLen; d <= maxLen; d++ {
-			plant(mid+d, "needle")
+			in := planted(sz, mid+d, "needle")
+			t.Run(fmt.Sprintf("sz=%d/mid%+d", sz, d), func(t *testing.T) {
+				checkAgainstNaive(t, patterns, in)
+			})
 		}
 		for w := 1; w <= 8; w++ {
 			cb := sz * w / 8
-			plant(cb-3, "abcdefghij")
-			plant(cb, "xyz")
+			for _, tc := range []struct {
+				pos int
+				s   string
+			}{
+				{cb - 3, "abcdefghij"},
+				{cb, "xyz"},
+			} {
+				in := planted(sz, tc.pos, tc.s)
+				t.Run(fmt.Sprintf("sz=%d/cb%d/%s", sz, w, tc.s), func(t *testing.T) {
+					checkAgainstNaive(t, patterns, in)
+				})
+			}
 		}
-		plant(sz-len("needle"), "needle") // ends exactly at input end
-		plant(0, "needle")                // starts at input start
-		t.Run(fmt.Sprintf("sz=%d", sz), func(t *testing.T) {
-			checkAgainstNaive(t, patterns, in)
+		t.Run(fmt.Sprintf("sz=%d/end", sz), func(t *testing.T) {
+			checkAgainstNaive(t, patterns, planted(sz, sz-len("needle"), "needle"))
+		})
+		t.Run(fmt.Sprintf("sz=%d/start", sz), func(t *testing.T) {
+			checkAgainstNaive(t, patterns, planted(sz, 0, "needle"))
 		})
 	}
 }
 
-// TestRootSkipDensityGate exercises both sides of walkTable's density gate:
-// a low-density input (sparse stop bytes, long self-loop runs) engages the
-// skip, and a high-density input (nearly every byte leaves the root)
-// disables it. The gate only toggles an optimization, so Match output must
-// equal the naive reference either way. Patterns start with several distinct
+// TestRootSkipDensityGate checks that walkTable's density gate — an
+// output-invisible optimization that only toggles whether root self-loops are
+// skipped — never changes Match output. It feeds a low-density input (sparse
+// stop bytes, long self-loop runs) and a high-density input (nearly every byte
+// leaves the root) and asserts both still equal the naive reference. The
+// gate's disable decision itself is not observable in Match output, so it is
+// asserted directly in TestRootSkipSamplerDisableDecision; this test only
+// guards correctness across densities. Patterns start with several distinct
 // bytes so the trie takes the multi-stop-byte walkTable path where the gate
 // lives.
 func TestRootSkipDensityGate(t *testing.T) {
@@ -238,7 +260,7 @@ func TestRootSkipDensityGate(t *testing.T) {
 	}
 
 	// High density: cycle through the stop-byte first letters so almost
-	// every byte leaves the root and the gate disables the skip.
+	// every byte leaves the root.
 	high := make([]byte, n)
 	firsts := []byte{'a', 'b', 'c', 'd', 'e'}
 	for i := range high {
@@ -249,10 +271,69 @@ func TestRootSkipDensityGate(t *testing.T) {
 		copy(high[pos:], "banana")
 	}
 
-	t.Run("low_density_skip_engaged", func(t *testing.T) {
+	t.Run("low_density", func(t *testing.T) {
 		checkAgainstNaive(t, patterns, low)
 	})
-	t.Run("high_density_skip_disabled", func(t *testing.T) {
+	t.Run("high_density", func(t *testing.T) {
 		checkAgainstNaive(t, patterns, high)
 	})
+}
+
+// TestRootSkipSamplerDisableDecision is a white-box check of walkTable's
+// density gate. The gate is invisible in Match output, so it cannot be
+// verified through checkAgainstNaive; instead this drives the exact sampler
+// walkTable uses and asserts the disable decision on both sides of the ~1/16
+// break-even.
+func TestRootSkipSamplerDisableDecision(t *testing.T) {
+	// High density: each run is one self-loop byte then a stop byte (gap=1 =>
+	// 2 bytes/run at 1/2 density, far above 1/16). Once the budget is spent,
+	// the skip must be disabled.
+	high := rootSkipSampler{budget: rootSkipSampleLen}
+	disabled := false
+	for i := 0; i < rootSkipSampleLen; i++ {
+		if high.observe(1) {
+			disabled = true
+		}
+	}
+	if !disabled || !high.disabled {
+		t.Fatalf("high density: gate should disable the skip, got disabled=%v", high.disabled)
+	}
+
+	// Low density: long self-loop runs between stop bytes (gap=1024 => ~1/1025
+	// density, far below 1/16). The skip must stay enabled.
+	low := rootSkipSampler{budget: rootSkipSampleLen}
+	for i := 0; i < 100; i++ {
+		if low.observe(1024) {
+			t.Fatalf("low density: gate disabled the skip after run %d", i)
+		}
+	}
+	if low.disabled {
+		t.Fatal("low density: gate should leave the skip enabled")
+	}
+
+	// Boundary: the decision flips at the exact 1/16 break-even. gap=15 gives
+	// density 1/16 (stopBytes*16 == rootBytes) and must disable; gap=16 gives
+	// 1/17, just below, and must stay enabled. These straddle the exact
+	// stopBytes*16 >= rootBytes threshold so a regression in that arithmetic is
+	// caught, unlike the extreme cases above.
+	atBreakeven := rootSkipSampler{budget: rootSkipSampleLen}
+	disabled = false
+	for i := 0; i < rootSkipSampleLen; i++ {
+		if atBreakeven.observe(15) {
+			disabled = true
+		}
+	}
+	if !disabled || !atBreakeven.disabled {
+		t.Fatalf("gap=15 (1/16 density): gate should disable the skip, got disabled=%v", atBreakeven.disabled)
+	}
+
+	belowBreakeven := rootSkipSampler{budget: rootSkipSampleLen}
+	for i := 0; i < rootSkipSampleLen; i++ {
+		if belowBreakeven.observe(16) {
+			t.Fatalf("gap=16 (below 1/16): gate disabled the skip after run %d", i)
+		}
+	}
+	if belowBreakeven.disabled {
+		t.Fatal("gap=16 (below 1/16): gate should leave the skip enabled")
+	}
 }

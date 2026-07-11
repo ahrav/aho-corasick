@@ -164,6 +164,36 @@ const (
 // the input's stop-byte density.
 const rootSkipSampleLen = 4096
 
+// rootSkipSampler decides, from a bounded prefix of root-state runs, whether
+// walkTable's self-loop skip is paying off. Each observed run is `gap`
+// self-loop bytes followed by one stop byte that leaves the root. Once the
+// sample budget is spent, the skip is disabled if the stop-byte density
+// reached the ~1/16 break-even (stopBytes*16 >= rootBytes), where the skip
+// machinery costs about as much as the plain loop. The decision is invisible
+// in Match output — it only toggles an optimization — so it is asserted
+// directly in tests via this type.
+type rootSkipSampler struct {
+	budget    int
+	rootBytes int
+	stopBytes int
+	disabled  bool
+}
+
+// observe records one root-state run of `gap` self-loop bytes ending at a stop
+// byte and reports whether the skip should now be disabled. Runs after the
+// budget is spent are ignored, so the decision is made exactly once.
+func (s *rootSkipSampler) observe(gap int) bool {
+	if s.budget > 0 {
+		s.rootBytes += gap + 1
+		s.stopBytes++
+		s.budget -= gap + 1
+		if s.budget <= 0 && s.stopBytes*16 >= s.rootBytes {
+			s.disabled = true
+		}
+	}
+	return s.disabled
+}
+
 // skipRootTable returns the position of the first byte at or after i
 // that leaves the root state, or len(input) if there is none, using the
 // rootStop lookup table.
@@ -287,8 +317,7 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 	// skip reads anyway, so this adds no extra reads and nothing before the
 	// first match.
 	skip := true
-	sample := rootSkipSampleLen
-	var rootBytes, stopBytes int
+	sampler := rootSkipSampler{budget: rootSkipSampleLen}
 
 	for i := 0; i < inputLen; i++ {
 		if skip && s == rootState {
@@ -296,14 +325,9 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 			// The root state never produces a match, so no dict checks
 			// are needed until we leave it.
 			j := tr.skipRootTable(input, i)
-			if sample > 0 && j < inputLen {
+			if j < inputLen && sampler.observe(j-i) {
 				// j-i self-looping bytes, then one stop byte at j.
-				rootBytes += j - i + 1
-				stopBytes++
-				sample -= j - i + 1
-				if sample <= 0 && stopBytes*16 >= rootBytes {
-					skip = false
-				}
+				skip = false
 			}
 			i = j
 			if i == inputLen {
@@ -431,20 +455,14 @@ func (tr *Trie) matchTable(input []byte, buf *matchBuf) {
 	// walkTable. Sample the first rootSkipSampleLen root-state bytes, and
 	// disable the skip for the remainder once density reaches ~1/16.
 	skip := true
-	sample := rootSkipSampleLen
-	var rootBytes, stopBytes int
+	sampler := rootSkipSampler{budget: rootSkipSampleLen}
 
 	for i := 0; i < inputLen; i++ {
 		if skip && s == rootState {
 			j := tr.skipRootTable(input, i)
-			if sample > 0 && j < inputLen {
+			if j < inputLen && sampler.observe(j-i) {
 				// j-i self-looping bytes, then one stop byte at j.
-				rootBytes += j - i + 1
-				stopBytes++
-				sample -= j - i + 1
-				if sample <= 0 && stopBytes*16 >= rootBytes {
-					skip = false
-				}
+				skip = false
 			}
 			i = j
 			if i == inputLen {
