@@ -191,3 +191,22 @@ func TestDecodeRejectsOutOfRangeDictLink(t *testing.T) {
 		t.Fatal("expected error for out-of-range dictLink target")
 	}
 }
+
+func TestDecodeRejectsCyclicDictLink(t *testing.T) {
+	for name, dictLink := range map[string][]uint32{
+		"self-loop": {0, 0, 2, 0},
+		"two-cycle": {0, 0, 3, 2},
+	} {
+		failTrans := make([][256]uint32, 4)
+		for s := range failTrans {
+			for b := range 256 {
+				failTrans[s][b] = rootState
+			}
+		}
+
+		_, err := Decode(encodeRaw(t, make([]uint32, 4), failTrans, dictLink, make([]uint32, 4)))
+		if err == nil {
+			t.Fatalf("%s: expected error for cyclic dictLink chain", name)
+		}
+	}
+}

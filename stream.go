@@ -162,6 +162,26 @@ func (dec *decoder) decode() (*Trie, error) {
 			return nil, fmt.Errorf("ahocorasick: corrupt trie: dictLink %d targets state %d, want < %d states", i, v, failTransLen)
 		}
 	}
+	// A dictLink cycle (e.g. 5 -> 7 -> 5) passes the bounds check but
+	// would hang the emit loops, which chase chains until nilState.
+	// Verify every chain terminates; memoizing resolved states keeps the
+	// pass O(states). A terminating chain visits distinct unresolved
+	// states, so a path as long as the table proves a repeat.
+	resolved := make([]bool, dictLinkLen)
+	resolved[nilState] = true
+	path := make([]uint32, 0, 64)
+	for s := range dictLink {
+		path = path[:0]
+		for u := uint32(s); !resolved[u]; u = dictLink[u] {
+			if len(path) == len(dictLink) {
+				return nil, fmt.Errorf("ahocorasick: corrupt trie: dictLink chain from state %d cycles", s)
+			}
+			path = append(path, u)
+		}
+		for _, p := range path {
+			resolved[p] = true
+		}
+	}
 
 	pattern := make([]uint32, patternLen)
 	if err := binary.Read(r, binary.LittleEndian, pattern); err != nil {
