@@ -1,6 +1,9 @@
 package ahocorasick
 
 import (
+	"bytes"
+	"encoding/binary"
+	"math/bits"
 	"sync"
 )
 
@@ -16,6 +19,18 @@ type Trie struct {
 	dict     []uint32
 	pattern  []uint32
 	dictLink []uint32
+
+	// rootStop[b] is 1 if byte b moves the automaton out of the root
+	// state, 0 if it self-loops. Runs of zero bytes can be skipped
+	// wholesale while at the root, since the root never produces a
+	// match. Using 0/1 bytes (rather than bools) lets the skip loop
+	// OR eight lookups together and take one branch per eight bytes.
+	rootStop [256]byte
+	// rootStopBytes holds the single stop byte when the root leaves its
+	// self-loop on exactly one byte value; the scan loops then skip root
+	// self-loops with SWAR plus the vectorized bytes.IndexByte instead of
+	// the rootStop table. Empty for zero or several stop bytes.
+	rootStopBytes []byte
 
 	bufPool sync.Pool // Pool of *matchBuf
 }
@@ -81,6 +96,93 @@ func newBufPool() sync.Pool {
 	}
 }
 
+// buildRootSkip derives the root self-loop byte set from failTrans.
+// Must be called after failTrans is fully populated.
+func (tr *Trie) buildRootSkip() {
+	tr.rootStopBytes = nil
+	for b := range 256 {
+		if tr.failTrans[rootState][b] != rootState {
+			tr.rootStop[b] = 1
+			tr.rootStopBytes = append(tr.rootStopBytes, byte(b))
+		} else {
+			tr.rootStop[b] = 0
+		}
+	}
+	// With a single stop byte, the scan loops skip root self-loops with
+	// an inline SWAR word scan plus the vectorized bytes.IndexByte (see
+	// walkStopByte). Several stop bytes would need one IndexByte pass per
+	// value, so fall back to the rootStop table.
+	if len(tr.rootStopBytes) > 1 {
+		tr.rootStopBytes = nil
+	}
+}
+
+// swar constants for the zero-byte test: bit 7 of each byte of
+// (w-ones) & ^w & highs is set iff that byte of w is zero.
+const (
+	swarOnes  uint64 = 0x0101010101010101
+	swarHighs uint64 = swarOnes << 7
+)
+
+// rootSkipSampleLen bounds how many root-state bytes walkTable samples,
+// inline, before it commits to whether the root self-loop skip pays off at
+// the input's stop-byte density.
+const rootSkipSampleLen = 4096
+
+// rootSkipSampler decides, from a bounded prefix of root-state runs, whether
+// walkTable's self-loop skip is paying off. Each observed run is `gap`
+// self-loop bytes followed by one stop byte that leaves the root. Once the
+// sample budget is spent, the skip is disabled if the stop-byte density
+// reached the ~1/16 break-even (stopBytes*16 >= rootBytes), where the skip
+// machinery costs about as much as the plain loop. The decision is invisible
+// in Match output — it only toggles an optimization — so it is asserted
+// directly in tests via this type.
+type rootSkipSampler struct {
+	budget    int
+	rootBytes int
+	stopBytes int
+	disabled  bool
+}
+
+// observe records one root-state run of `gap` self-loop bytes ending at a stop
+// byte and reports whether the skip should now be disabled. Runs after the
+// budget is spent are ignored, so the decision is made exactly once.
+func (s *rootSkipSampler) observe(gap int) bool {
+	if s.budget > 0 {
+		s.rootBytes += gap + 1
+		s.stopBytes++
+		s.budget -= gap + 1
+		if s.budget <= 0 && s.stopBytes*16 >= s.rootBytes {
+			s.disabled = true
+		}
+	}
+	return s.disabled
+}
+
+// skipRootTable returns the position of the first byte at or after i
+// that leaves the root state, or len(input) if there is none, using the
+// rootStop lookup table.
+func (tr *Trie) skipRootTable(input []byte, i int) int {
+	rootStop := &tr.rootStop
+	inputLen := len(input)
+	// Eight lookups are OR-ed together so the common all-skippable
+	// case costs a single branch per eight input bytes.
+	for i+8 <= inputLen {
+		m := rootStop[input[i]] | rootStop[input[i+1]] |
+			rootStop[input[i+2]] | rootStop[input[i+3]] |
+			rootStop[input[i+4]] | rootStop[input[i+5]] |
+			rootStop[input[i+6]] | rootStop[input[i+7]]
+		if m != 0 {
+			break
+		}
+		i += 8
+	}
+	for i < inputLen && rootStop[input[i]] == 0 {
+		i++
+	}
+	return i
+}
+
 // Walk calls this function on any match, giving the end position, length of the matched bytes,
 // and the pattern number.
 type WalkFn func(end, n, pattern uint32) bool
@@ -88,7 +190,81 @@ type WalkFn func(end, n, pattern uint32) bool
 // Walk runs the algorithm on a given output, calling the supplied callback function on every
 // match. The algorithm will terminate if the callback function returns false.
 func (tr *Trie) Walk(input []byte, fn WalkFn) {
-	// Local references to frequently accessed slices.
+	if len(tr.rootStopBytes) == 1 {
+		tr.walkStopByte(input, fn)
+		return
+	}
+	tr.walkTable(input, fn)
+}
+
+// walkStopByte is Walk specialized for tries whose root leaves on a
+// single byte value: the root skip is an inlined SWAR word scan with a
+// vectorized bytes.IndexByte fallback for long gaps.
+func (tr *Trie) walkStopByte(input []byte, fn WalkFn) {
+	failTrans := tr.failTrans
+	dict := tr.dict
+	pattern := tr.pattern
+	dictLink := tr.dictLink
+
+	c := tr.rootStopBytes[0]
+	cc := uint64(c) * swarOnes
+
+	s := rootState
+
+	inputLen := len(input)
+	for i := 0; i < inputLen; i++ {
+		if s == rootState && input[i] != c {
+			// Skip to the next stop byte. Typical gaps are short, so
+			// scan a few words with SWAR first; a bytes.IndexByte call
+			// per gap would be dominated by its setup cost.
+		skip:
+			for k := 0; ; k++ {
+				if i+8 > inputLen {
+					for i < inputLen && input[i] != c {
+						i++
+					}
+					break
+				}
+				w := binary.LittleEndian.Uint64(input[i:]) ^ cc
+				if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
+					i += bits.TrailingZeros64(m) >> 3
+					break
+				}
+				i += 8
+				if k == 3 {
+					j := bytes.IndexByte(input[i:], c)
+					if j < 0 {
+						i = inputLen
+					} else {
+						i += j
+					}
+					break skip
+				}
+			}
+			if i == inputLen {
+				return
+			}
+		}
+
+		s = failTrans[s][input[i]]
+		ds := dict[s]
+		dl := dictLink[s]
+		if ds != 0 || dl != nilState {
+			if ds != 0 && !fn(uint32(i), ds, pattern[s]) {
+				return
+			}
+			for u := dl; u != nilState; u = dictLink[u] {
+				if !fn(uint32(i), dict[u], pattern[u]) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// walkTable is Walk for tries with several root stop bytes, using the
+// rootStop table to skip root self-loops.
+func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 	failTrans := tr.failTrans
 	dict := tr.dict
 	pattern := tr.pattern
@@ -97,9 +273,36 @@ func (tr *Trie) Walk(input []byte, fn WalkFn) {
 	s := rootState
 
 	inputLen := len(input)
-	for i := range inputLen {
-		s = failTrans[s][input[i]]
 
+	// Root self-loop skip, gated on stop-byte density measured INLINE so an
+	// early-terminating caller (Walk whose callback returns false, as
+	// MatchFirst does) never pays an up-front prefix scan. Begin optimistic;
+	// over the first rootSkipSampleLen root-state bytes, accumulate how many
+	// leave the root (stop bytes). If that density reaches the measured
+	// break-even (~1/16), where the skip machinery costs about as much as the
+	// plain loop, disable it for the remainder. The sampled bytes are ones the
+	// skip reads anyway, so this adds no extra reads and nothing before the
+	// first match.
+	skip := true
+	sampler := rootSkipSampler{budget: rootSkipSampleLen}
+
+	for i := 0; i < inputLen; i++ {
+		if skip && s == rootState {
+			// Fast path: while at the root, skip bytes that self-loop.
+			// The root state never produces a match, so no dict checks
+			// are needed until we leave it.
+			j := tr.skipRootTable(input, i)
+			if j < inputLen && sampler.observe(j-i) {
+				// j-i self-looping bytes, then one stop byte at j.
+				skip = false
+			}
+			i = j
+			if i == inputLen {
+				return
+			}
+		}
+
+		s = failTrans[s][input[i]]
 		ds := dict[s]
 		dl := dictLink[s]
 		if ds != 0 || dl != nilState {
