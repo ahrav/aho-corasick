@@ -595,8 +595,11 @@ func (tr *Trie) matchDualStopByte16(input []byte, buf *matchBuf) {
 
 	for iA < mid && iB < inputLen {
 		// Lane A: one step — a whole root gap skip, or one transition.
+		// The gap search is bounded to lane A's half: a root gap carries
+		// no automaton state, so bytes at or past mid are lane B's alone
+		// (unbounded, a gap crossing mid would scan lane B's half twice).
 		if sA == rootState && input[iA] != c {
-			iA = nextStop(input, iA, c, cc)
+			iA = nextStop(input[:mid], iA, c, cc)
 		} else {
 			v := stopE
 			if sA != rootState {
