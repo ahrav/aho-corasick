@@ -526,11 +526,16 @@ func (tr *Trie) matchParallel(input []byte, p int) []*Match {
 			for drop < len(raw) && int(raw[drop])+scanStart < start {
 				drop += 2
 			}
-			raw = raw[drop:]
-			for idx := 0; idx < len(raw); idx += 2 {
+			for idx := drop; idx < len(raw); idx += 2 {
 				raw[idx] += uint64(scanStart)
 			}
-			buf.raw = raw
+			if drop > 0 {
+				// Shift the kept entries down instead of reslicing
+				// forward: assigning raw[drop:] back would move the
+				// pooled slice's base, permanently leaking the dropped
+				// prefix's capacity from the buffer's future lives.
+				buf.raw = raw[:copy(raw, raw[drop:])]
+			}
 		}(start, end, buf)
 	}
 
@@ -541,9 +546,18 @@ func (tr *Trie) matchParallel(input []byte, p int) []*Match {
 		tr.matchSeq(input[:min(chunk, len(input))], main)
 		wg.Wait()
 		for k := 1; k < p; k++ {
-			main.raw = append(main.raw, bufs[k].raw...)
-			bufs[k].raw = bufs[k].raw[:0]
-			tr.bufPool.Put(bufs[k])
+			wb := bufs[k]
+			main.raw = append(main.raw, wb.raw...)
+			wb.raw = wb.raw[:0]
+			// Worker buffers never materialize, so an arena filled in a
+			// previous life of this pooled buffer may still hold
+			// Match.match slices into an old input; clear it so the
+			// buffer doesn't retain that input while idle in the pool.
+			// (materialize keeps the arena tail beyond len zeroed, so
+			// clearing len and truncating leaves no stale entries.)
+			clear(wb.arena)
+			wb.arena = wb.arena[:0]
+			tr.bufPool.Put(wb)
 		}
 	} else {
 		main = tr.bufPool.Get().(*matchBuf)
