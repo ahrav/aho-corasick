@@ -64,6 +64,20 @@ type Trie struct {
 	// on every root re-entry, cutting a serial L1 access.
 	stopEntry16 uint16
 
+	// transC (EXPERIMENT) is a byte-class-compressed copy of failTrans
+	// for multi-stop-byte tries. Bytes absent from every pattern behave
+	// identically in every state, so they share one column; each pattern
+	// byte gets its own. Rows shrink from 1KB to nc*4 bytes (~128B for
+	// natural-language dictionaries), cutting the scan's hot cache
+	// footprint ~8x. Entries store the premultiplied row offset
+	// (id << ncLog2) with the emit flag in bit 0; classOf[input[i]]
+	// depends only on the input byte, so the class lookup stays OFF the
+	// serial state-dependency chain. Derived from failTrans; the wire
+	// format is unchanged.
+	transC  []uint32
+	classOf [256]uint8
+	ncLog2  uint32
+
 	bufPool sync.Pool // Pool of *matchBuf
 }
 
@@ -180,6 +194,84 @@ func (tr *Trie) buildFailTrans16() {
 				w |= 1 << 15
 			}
 			tr.failTrans16[s<<8+b] = w
+		}
+	}
+}
+
+// buildTransC (EXPERIMENT) builds the byte-class-compressed table for
+// multi-stop-byte tries. Two bytes share a class iff their columns are
+// identical across all states; for dictionary tries the ~220 bytes that
+// appear in no pattern collapse into one class. Must run after
+// addOutputFlags and buildRootSkip. Leaves transC nil (path disabled)
+// when the trie is single-stop-byte (that path is already faster) or the
+// premultiplied offset would overflow 31 bits.
+func (tr *Trie) buildTransC() {
+	tr.transC = nil
+	if len(tr.rootStopBytes) == 1 || len(tr.failTrans) == 0 {
+		return
+	}
+	// Classes: bytes with identical behavior in every state. Exact
+	// column comparison via hashing would be O(states*256); for class
+	// identity it suffices that dictionary-absent bytes always fail to
+	// the root path. Conservatively: class by column identity computed
+	// with a hash over the column, verified exactly on collision.
+	type colKey struct{ h1, h2 uint64 }
+	classIdx := make(map[colKey]uint8)
+	var rep [256]int // representative byte per class, for verification
+	nc := 0
+	for b := 0; b < 256; b++ {
+		var h1, h2 uint64
+		for s := range tr.failTrans {
+			v := uint64(tr.failTrans[s][b])
+			h1 = h1*1099511628211 + v
+			h2 = h2*40503 + v ^ v>>13
+		}
+		k := colKey{h1, h2}
+		if ci, ok := classIdx[k]; ok {
+			// verify exactly against the representative to rule out collision
+			same := true
+			rb := rep[ci]
+			for s := range tr.failTrans {
+				if tr.failTrans[s][b] != tr.failTrans[s][rb] {
+					same = false
+					break
+				}
+			}
+			if same {
+				tr.classOf[b] = ci
+				continue
+			}
+		}
+		if nc == 256 {
+			tr.transC = nil
+			return
+		}
+		classIdx[k] = uint8(nc)
+		rep[nc] = b
+		tr.classOf[b] = uint8(nc)
+		nc++
+	}
+
+	// Row stride: next power of two >= nc so the offset premultiply is a
+	// shift and offsets stay aligned.
+	log2 := uint32(0)
+	for 1<<log2 < nc {
+		log2++
+	}
+	if uint64(len(tr.failTrans))<<log2 >= 1<<31 {
+		return
+	}
+	tr.ncLog2 = log2
+	tr.transC = make([]uint32, len(tr.failTrans)<<log2)
+	for s := range tr.failTrans {
+		base := s << log2
+		for b := 0; b < 256; b++ {
+			v := tr.failTrans[s][b]
+			w := (v & stateMask) << log2
+			if v&outputFlag != 0 {
+				w |= 1
+			}
+			tr.transC[base+int(tr.classOf[b])] = w
 		}
 	}
 }
@@ -467,8 +559,63 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	}
 	if len(tr.rootStopBytes) == 1 {
 		tr.matchStopByte(input, buf)
-	} else {
-		tr.matchTable(input, buf)
+		return
+	}
+	if tr.transC != nil {
+		tr.matchTableC(input, buf)
+		return
+	}
+	tr.matchTable(input, buf)
+}
+
+// matchTableC (EXPERIMENT) is matchTable on the byte-class-compressed
+// premultiplied table. The serial chain is load->and->add->load; the
+// classOf lookup depends only on input[i] so it runs ahead of the chain.
+func (tr *Trie) matchTableC(input []byte, buf *matchBuf) {
+	ftBase := unsafe.Pointer(&tr.transC[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+	classOf := &tr.classOf
+
+	log2 := tr.ncLog2
+	sOff := uintptr(rootState) << log2
+	rootOff := sOff
+
+	inputLen := len(input)
+
+	// Root self-loop skip gated on stop-byte density; see matchTable.
+	skip := true
+	sample := rootSkipSampleLen
+	var rootBytes, stopBytes int
+
+	for i := 0; i < inputLen; i++ {
+		if skip && sOff == rootOff {
+			j := tr.skipRootTable(input, i)
+			if sample > 0 && j < inputLen {
+				rootBytes += j - i + 1
+				stopBytes++
+				sample -= j - i + 1
+				if sample <= 0 && stopBytes*16 >= rootBytes {
+					skip = false
+				}
+			}
+			i = j
+			if i == inputLen {
+				return
+			}
+		}
+
+		v := *(*uint32)(unsafe.Add(ftBase, (sOff+uintptr(classOf[input[i]]))<<2))
+		sOff = uintptr(v &^ 1)
+		if v&1 != 0 {
+			s := sOff >> log2
+			if dp := *(*uint64)(unsafe.Add(dpBase, s<<3)); uint32(dp) != 0 {
+				buf.raw = append(buf.raw, uint64(i), dp)
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, s<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				buf.raw = append(buf.raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+			}
+		}
 	}
 }
 

@@ -235,6 +235,7 @@ func (dec *decoder) decode(maxStates int) (*Trie, error) {
 	trie.addOutputFlags()
 	trie.buildRootSkip()
 	trie.buildFailTrans16()
+	trie.buildTransC()
 	trie.setStopEntry()
 	return trie, nil
 }

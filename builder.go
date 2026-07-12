@@ -234,6 +234,7 @@ func (tb *TrieBuilder) Build() *Trie {
 	trie.addOutputFlags()
 	trie.buildRootSkip()
 	trie.buildFailTrans16()
+	trie.buildTransC()
 	trie.setStopEntry()
 
 	return trie
