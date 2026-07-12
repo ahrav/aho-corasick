@@ -1,9 +1,12 @@
 # Perf-gap research — final classification
 
 **Scope:** every candidate area from the goal, closed with KEEP / REJECT / DEFER.
-**Baseline for all A/B:** perf/integration 63116c0 (HEAD 02f31eb + already-reviewed
-density gate, deterministic-BFS fix, Decode hardening). HEAD itself lacks those
-reviewed fixes; adopting them is a prerequisite (E0).
+**Baseline for all A/B (r1–r6):** perf/integration 63116c0 (research HEAD 02f31eb +
+already-reviewed density gate, deterministic-BFS fix, Decode hardening). Master has
+since merged equivalent content via PRs #5–#10 (ea4bca2); this branch is now REBASED
+onto that master — see "Rebase onto origin/master" in results.md and the r7
+master-vs-rebased validation (wins reproduce: spread10k −18.6%/−18.0%,
+Midsize1k −12.9%, DenseSpread −40.8%, sorted paths ~0).
 **Method:** hypotheses written before coding (research/HYPOTHESES.md); round-robin
 interleaved A/B on pinned cores with load gating; benchstat n=10–12; correctness
 gates per change: full suite, differential fuzz (FuzzMatch vs naiveMatch), -race,
@@ -94,15 +97,19 @@ overwritten at own-child bytes.
   transC captured the cache-footprint win at ~60 lines.
 
 ## Where the throughput now stands (spread10k/Ibsen, the realistic case)
-HEAD 02f31eb ≈ 309µs (e0rc run, n=12, raw data preserved at commit dab4544:
-research/e0rc.a.txt) → integration 292µs → **keep-candidate 236µs** (−24% vs
-HEAD, −19% vs integration), zero-alloc steady state preserved, build 5–8x
-faster, encode deterministic. Sorted-corpus (MatchIbsen) numbers unchanged
-from the prior 7.65x-optimized state.
+research HEAD 02f31eb ≈ 309µs (e0rc run, n=12; raw data on local experiment
+branch, commit dab4544:research/e0rc.a.txt) → integration/master ≈ 292–295µs →
+**keep-candidate 236–240µs** (r7, measured against origin/master ea4bca2
+directly after the rebase: −18.6% Ibsen / −18.0% GPL, p=0.009). Zero-alloc
+steady state preserved, build 5–8x faster, encode deterministic.
+Sorted-corpus (MatchIbsen) numbers unchanged from the prior 7.65x-optimized
+state (r7: MatchIbsen/10000 +0.85% — same-magnitude code-layout noise seen in
+r6 on machine-code-identical paths).
 
-Branches (worktree `aho-research`): keep-candidate (final), plus experiment
-branches ea/eb/ec/ee2/eg/eh/ef and keepdual for the rejected/superseded work.
-Raw benchstat inputs: aho-bench/r1–r4, build*.txt.
+Branches (local worktree `aho-research`): keep-candidate (final; pushed and
+rebased onto master ea4bca2), plus local experiment branches ea/eb/ec/ee2/eg/
+eh/ef and keepdual for the rejected/superseded work.
+Raw benchstat inputs: local `aho-bench/` r1–r7, build*.txt.
 
 ## Post-hoc verification (adversarial audit + r5 confirmation)
 - r5 (n=10, fresh round-robin): spread10k/Ibsen −18.9%, spread10k/GPL −16.7%,
