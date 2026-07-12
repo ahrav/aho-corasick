@@ -452,13 +452,41 @@ func (tr *Trie) Match(input []byte) []*Match {
 // dualThreshold is the minimum input size for the dual-cursor scan.
 const dualThreshold = 1024
 
+// dualDenseThreshold is the minimum sampled stop-byte density for the
+// dual-cursor scan, in stop bytes per 4096 input bytes (~10%).
+// Measured on Zen 4: natural text over a single-stop-byte pattern set
+// sits near 3-4% (short excursions, single-cursor inline skip wins by
+// 10-15%), while concatenated dictionary words sit at 11-15% (long
+// dependent-load excursions, dual-cursor wins by 25-45% on small
+// inputs). Word-plus-filler mixtures up to ~9% still favor the single
+// cursor.
+const dualDenseThreshold = 410
+
+// looksDense samples up to three 1KB windows of input (head, middle,
+// tail) and reports whether the stop-byte density is high enough for the
+// dual-cursor scan to pay. Costs three vectorized bytes.Count calls,
+// noise against a scan that touches every byte.
+func looksDense(input []byte, c byte) bool {
+	n := len(input)
+	if n <= 4096 {
+		return bytes.Count(input, []byte{c})*4096 >= dualDenseThreshold*n
+	}
+	k := bytes.Count(input[:1024], []byte{c})
+	mid := n / 2
+	k += bytes.Count(input[mid:mid+1024], []byte{c})
+	k += bytes.Count(input[n-1024:], []byte{c})
+	return k*4 >= dualDenseThreshold*3
+}
+
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
 		// Dual-scan only when the maxLen-1 bytes lane B re-scans are a
-		// small fraction of a half; otherwise the redundant overlap work
-		// outweighs the overlapped load latency.
-		if len(input) >= dualThreshold && int(tr.maxLen)*4 < len(input)/2 {
+		// small fraction of a half, and the input is dense enough in
+		// stop bytes that overlapping two transition chains beats the
+		// single-cursor loop's inline root skip.
+		if len(input) >= dualThreshold && int(tr.maxLen)*4 < len(input)/2 &&
+			looksDense(input, tr.rootStopBytes[0]) {
 			tr.matchDualStopByte16(input, buf)
 			return
 		}
