@@ -419,12 +419,24 @@ const parallelChunk = 8 << 10
 
 // Match runs the Aho-Corasick string-search algorithm on a byte input.
 func (tr *Trie) Match(input []byte) []*Match {
-	if len(input) >= 2*parallelChunk {
-		// Workers dual-scan their chunks, so more of them mainly adds
-		// wakeup and steal latency; cap at 8 to keep each chunk large
-		// enough to amortize goroutine startup.
-		if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, 8); p > 1 {
-			return tr.matchParallel(input, p)
+	if len(input) >= 32<<10 {
+		// The single-stop-byte automaton scans sparse input at ~2GB/s
+		// serially, so goroutine startup, the redundant overlap
+		// re-scans, and the merge fan-in only pay for themselves near
+		// 128KB; on stop-byte-dense input its serial throughput drops
+		// several-fold and parallelism pays from 32KB, like the slower
+		// table-path automata.
+		pmin := 32 << 10
+		if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 &&
+			!looksDense(input, tr.rootStopBytes[0]) {
+			pmin = 128 << 10
+		}
+		if len(input) >= pmin {
+			// Cap at 8 workers: more of them mainly adds wakeup and
+			// steal latency while the post-scan merge is serial.
+			if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, 8); p > 1 {
+				return tr.matchParallel(input, p)
+			}
 		}
 	}
 
