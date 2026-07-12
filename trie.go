@@ -243,8 +243,11 @@ func (tr *Trie) buildTransC() {
 	}
 
 	// Row stride: next power of two >= nc so the offset premultiply is a
-	// shift and offsets stay aligned.
-	log2 := uint32(0)
+	// shift and offsets stay aligned. Minimum stride 2: entries carry the
+	// emit flag in bit 0, so offsets must be even (log2 >= 1). log2 can
+	// only be 0 for a pattern-less trie, whose scan never reads transC,
+	// but keep the entries well-formed regardless.
+	log2 := uint32(1)
 	for 1<<log2 < nc {
 		log2++
 	}
