@@ -55,8 +55,9 @@ overwritten at own-child bytes.
   is ever found.
 - **Premultiplied 32-bit full-row entries** (EB): −2..−3.5% mid, +1% sorted10k;
   subsumed by transC (premultiplies anyway). Not worth a second table format.
-- **16-bit rows for multi-stop tries** (EC): −5.6% on one mid bench, ~0
-  elsewhere; strictly dominated by transC (4x smaller rows vs 2x, no 2^15 cap).
+- **16-bit rows for multi-stop tries** (EC): −5.6% on one mid bench (weak:
+  p=0.023, outlier-contaminated ±313% CI), ~0 elsewhere; strictly dominated
+  by transC (4x smaller rows vs 2x, no 2^15 cap).
 - **Flattened dictLink output spans** (EF): re-tested on purpose-built
   output-heavy corpora (extreme overlaps, dense words): MatchIbsen/10000
   **+5.8%** (p=0.000, tight CIs — the load-bearing number) and
@@ -93,7 +94,8 @@ overwritten at own-child bytes.
   transC captured the cache-footprint win at ~60 lines.
 
 ## Where the throughput now stands (spread10k/Ibsen, the realistic case)
-HEAD 02f31eb ≈ 310µs → integration 292µs → **keep-candidate 237µs** (−24% vs
+HEAD 02f31eb ≈ 309µs (e0rc run, n=12, raw data preserved at commit dab4544:
+research/e0rc.a.txt) → integration 292µs → **keep-candidate 236µs** (−24% vs
 HEAD, −19% vs integration), zero-alloc steady state preserved, build 5–8x
 faster, encode deterministic. Sorted-corpus (MatchIbsen) numbers unchanged
 from the prior 7.65x-optimized state.
