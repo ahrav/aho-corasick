@@ -36,3 +36,20 @@ known hazard on this box. Memory win kept.
   completed found no defects; coverage gaps they would have flagged were
   closed directly with TestTransCEquivalence / TestTransCDecodeRebuild /
   TestDegenerateTries (all green incl. -race).
+
+## Rebase onto origin/master (ea4bca2, 2026-07-12)
+The research base 63116c0 (perf/integration) was never merged; master instead
+advanced via PRs #5–#10 to ea4bca2 with equivalent content (density gate,
+deterministic sort-keys BFS, Decode hardening incl. flag-free wire format +
+cyclic-dictLink rejection, parallel/dual-cursor merges). keep-candidate was
+rebased --onto ea4bca2. Conflicts (3) were mechanical:
+- Build()/decode() hook ordering: kept master's buildFailTrans16 AND added
+  buildTransC after it (both gated internally).
+- BFS loop: sorted-children iteration replaces master's sort-keys map walk
+  (same deterministic order — children are sorted by byte); dropped the now-
+  unused "slices" import; master's 2^31 max-states guard preserved.
+- buildFailTrans16 doc comment: kept ours.
+Post-rebase gates: full suite, -race, checkptr, FuzzMatch 30s,
+FuzzEncodeDecode 15s, encode-hash determinism (2 identical runs; hashes differ
+from pre-rebase because master's e861d01 strips outputFlag bits from the wire
+format — inherited, intended). r7 A/B vs origin/master pending.
