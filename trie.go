@@ -199,57 +199,47 @@ func (tr *Trie) buildFailTrans16() {
 }
 
 // buildTransC (EXPERIMENT) builds the byte-class-compressed table for
-// multi-stop-byte tries. Two bytes share a class iff their columns are
-// identical across all states; for dictionary tries the ~220 bytes that
-// appear in no pattern collapse into one class. Must run after
+// multi-stop-byte tries. A byte that labels no trie edge has an
+// all-root, never-emitting column (the failure chain bottoms out at the
+// root for every state), so all such bytes share class 0; every byte
+// that appears in some pattern gets its own class. This is exact and
+// costs one sequential pass over failTrans. Must run after
 // addOutputFlags and buildRootSkip. Leaves transC nil (path disabled)
-// when the trie is single-stop-byte (that path is already faster) or the
-// premultiplied offset would overflow 31 bits.
+// for single-stop-byte tries (their specialized path is faster) or when
+// the premultiplied offset would overflow 31 bits.
 func (tr *Trie) buildTransC() {
 	tr.transC = nil
 	if len(tr.rootStopBytes) == 1 || len(tr.failTrans) == 0 {
 		return
 	}
-	// Classes: bytes with identical behavior in every state. Exact
-	// column comparison via hashing would be O(states*256); for class
-	// identity it suffices that dictionary-absent bytes always fail to
-	// the root path. Conservatively: class by column identity computed
-	// with a hash over the column, verified exactly on collision.
-	type colKey struct{ h1, h2 uint64 }
-	classIdx := make(map[colKey]uint8)
-	var rep [256]int // representative byte per class, for verification
-	nc := 0
-	for b := 0; b < 256; b++ {
-		var h1, h2 uint64
-		for s := range tr.failTrans {
-			v := uint64(tr.failTrans[s][b])
-			h1 = h1*1099511628211 + v
-			h2 = h2*40503 + v ^ v>>13
-		}
-		k := colKey{h1, h2}
-		if ci, ok := classIdx[k]; ok {
-			// verify exactly against the representative to rule out collision
-			same := true
-			rb := rep[ci]
-			for s := range tr.failTrans {
-				if tr.failTrans[s][b] != tr.failTrans[s][rb] {
-					same = false
-					break
-				}
-			}
-			if same {
-				tr.classOf[b] = ci
-				continue
+
+	// A column is "active" if it ever leaves the root or ever emits.
+	var active [256]bool
+	for s := range tr.failTrans {
+		row := &tr.failTrans[s]
+		for b := range 256 {
+			if row[b] != rootState { // any flag or non-root target
+				active[b] = true
 			}
 		}
-		if nc == 256 {
-			tr.transC = nil
-			return
+	}
+
+	nc := 1 // class 0: all inactive bytes
+	for b := range 256 {
+		if active[b] {
+			tr.classOf[b] = uint8(nc & 0xff)
+			nc++
+		} else {
+			tr.classOf[b] = 0
 		}
-		classIdx[k] = uint8(nc)
-		rep[nc] = b
-		tr.classOf[b] = uint8(nc)
-		nc++
+	}
+	if nc > 256 {
+		// Every byte active and none inactive: 257 would-be classes.
+		// Just use byte identity (row = full 256 entries).
+		for b := range 256 {
+			tr.classOf[b] = uint8(b)
+		}
+		nc = 256
 	}
 
 	// Row stride: next power of two >= nc so the offset premultiply is a
@@ -265,8 +255,9 @@ func (tr *Trie) buildTransC() {
 	tr.transC = make([]uint32, len(tr.failTrans)<<log2)
 	for s := range tr.failTrans {
 		base := s << log2
+		row := &tr.failTrans[s]
 		for b := 0; b < 256; b++ {
-			v := tr.failTrans[s][b]
+			v := row[b]
 			w := (v & stateMask) << log2
 			if v&outputFlag != 0 {
 				w |= 1
