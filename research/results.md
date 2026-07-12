@@ -53,3 +53,13 @@ Post-rebase gates: full suite, -race, checkptr, FuzzMatch 30s,
 FuzzEncodeDecode 15s, encode-hash determinism (2 identical runs; hashes differ
 from pre-rebase because master's e861d01 strips outputFlag bits from the wire
 format — inherited, intended). r7 A/B vs origin/master pending.
+
+## r7 (origin/master ea4bca2 vs rebased keep-candidate, n=10)
+Wins survive the rebase measured directly against master: spread10k/Ibsen
+−18.6% (p=0.009), spread10k/GPL −18.0% (p=0.009), Midsize1k −12.9%,
+DenseSpread −40.8%; sorted10k and MatchIbsen/{1000,100000} ~0. One small
+delta: MatchIbsen/10000 +0.85% (p=0.001) — same magnitude/pattern as the r6
+code-layout noise on machine-code-identical paths (single-stop path code is
+untouched by transC; ft16 gating doesn't apply at 19.9K states... it does
+apply: sorted10k = single stop byte so ft16 still built; path identical).
+Consistent with alignment noise, not an algorithmic regression.
