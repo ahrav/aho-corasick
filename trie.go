@@ -383,12 +383,20 @@ func (tr *Trie) skipRootTable(input []byte, i int) int {
 	if tr.skipBytes != nil {
 		lim := i + 128
 		for i+8 <= inputLen {
-			m := rootStop[input[i]] | rootStop[input[i+1]] |
-				rootStop[input[i+2]] | rootStop[input[i+3]] |
-				rootStop[input[i+4]] | rootStop[input[i+5]] |
-				rootStop[input[i+6]] | rootStop[input[i+7]]
-			if m != 0 {
-				break
+			// See the comment on the main loop below.
+			if rootStop[input[i]]|rootStop[input[i+1]]|
+				rootStop[input[i+2]]|rootStop[input[i+3]]|
+				rootStop[input[i+4]]|rootStop[input[i+5]]|
+				rootStop[input[i+6]]|rootStop[input[i+7]] != 0 {
+				m := uint64(rootStop[input[i]]) |
+					uint64(rootStop[input[i+1]])<<8 |
+					uint64(rootStop[input[i+2]])<<16 |
+					uint64(rootStop[input[i+3]])<<24 |
+					uint64(rootStop[input[i+4]])<<32 |
+					uint64(rootStop[input[i+5]])<<40 |
+					uint64(rootStop[input[i+6]])<<48 |
+					uint64(rootStop[input[i+7]])<<56
+				return i + bits.TrailingZeros64(m)>>3
 			}
 			i += 8
 			if i >= lim {
@@ -400,15 +408,29 @@ func (tr *Trie) skipRootTable(input []byte, i int) int {
 		}
 		return i
 	}
-	// Eight lookups are OR-ed together so the common all-skippable
-	// case costs a single branch per eight input bytes.
+	// The eight 0/1 lookups are OR-ed together as the cheap reject, so
+	// the common all-skippable case costs a single branch per eight
+	// input bytes with no extra shift work. Only when the group holds a
+	// stop byte are the lookups re-shifted into disjoint bytes of one
+	// word, where TrailingZeros64 pinpoints the stop byte — replacing
+	// the up-to-8-iteration scalar re-scan (dependent loads plus a
+	// mispredict-prone branch each) with a branchless locate. Pure-skip
+	// input never pays the shift tree; dense-exit input pays it once
+	// per hit instead of the scalar tail.
 	for i+8 <= inputLen {
-		m := rootStop[input[i]] | rootStop[input[i+1]] |
-			rootStop[input[i+2]] | rootStop[input[i+3]] |
-			rootStop[input[i+4]] | rootStop[input[i+5]] |
-			rootStop[input[i+6]] | rootStop[input[i+7]]
-		if m != 0 {
-			break
+		if rootStop[input[i]]|rootStop[input[i+1]]|
+			rootStop[input[i+2]]|rootStop[input[i+3]]|
+			rootStop[input[i+4]]|rootStop[input[i+5]]|
+			rootStop[input[i+6]]|rootStop[input[i+7]] != 0 {
+			m := uint64(rootStop[input[i]]) |
+				uint64(rootStop[input[i+1]])<<8 |
+				uint64(rootStop[input[i+2]])<<16 |
+				uint64(rootStop[input[i+3]])<<24 |
+				uint64(rootStop[input[i+4]])<<32 |
+				uint64(rootStop[input[i+5]])<<40 |
+				uint64(rootStop[input[i+6]])<<48 |
+				uint64(rootStop[input[i+7]])<<56
+			return i + bits.TrailingZeros64(m)>>3
 		}
 		i += 8
 	}
