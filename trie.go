@@ -447,6 +447,7 @@ func (tr *Trie) scanRange16(input []byte, i, to int, s uint32, minEmit int, raw 
 
 	c := tr.rootStopBytes[0]
 	cc := uint64(c) * swarOnes
+	stopE := uint32(tr.stopEntry16)
 
 	inputLen := len(input)
 	for ; i < to; i++ {
@@ -480,7 +481,13 @@ func (tr *Trie) scanRange16(input []byte, i, to int, s uint32, minEmit int, raw 
 			}
 		}
 
-		v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		// At the root the cursor is on the stop byte (the skip above
+		// guarantees input[i] == c), so the transition is the
+		// precomputed constant; see matchStopByte16.
+		v := stopE
+		if s != rootState {
+			v = uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		}
 		s = v &^ (1 << 15)
 		if v&(1<<15) != 0 && i >= minEmit {
 			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
