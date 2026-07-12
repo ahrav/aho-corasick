@@ -189,6 +189,15 @@ func (tr *Trie) addOutputFlags() {
 		}
 	}
 
+	tr.buildDictPat()
+}
+
+// buildDictPat packs the per-state (pattern id, pattern length) pair
+// into one uint64 so the emit path loads both with a single access, and
+// records the longest pattern (the parallel scan's overlap width). The
+// builder fuses the output flags into its row DP and calls this
+// directly; the decode path reaches it through addOutputFlags.
+func (tr *Trie) buildDictPat() {
 	tr.dictPat = make([]uint64, len(tr.dict))
 	tr.maxLen = 0
 	for s := range tr.dict {
