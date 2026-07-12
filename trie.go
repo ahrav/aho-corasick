@@ -70,6 +70,19 @@ type Trie struct {
 	// on every root re-entry, cutting a serial L1 access.
 	stopEntry16 uint16
 
+	// failTransC is a byte-class-compressed copy of failTrans, built for
+	// automata too large for failTrans16 when few enough distinct byte
+	// values appear in the patterns. Bytes that appear in no pattern all
+	// behave identically (every state moves to the root), so one class
+	// column stands in for all of them; each pattern byte gets its own
+	// class. Rows shrink from 1KB to classStride*4 bytes, so the table
+	// the serial dependency chain loads from drops from hundreds of MB
+	// toward the L2/L3 sizes that dominate its latency. classOf maps an
+	// input byte to its class; classShift is log2 of the row stride.
+	failTransC []uint32
+	classOf    [256]uint8
+	classShift uint32
+
 	bufPool sync.Pool // Pool of *matchBuf
 }
 
@@ -187,6 +200,81 @@ func (tr *Trie) buildFailTrans16() {
 			tr.failTrans16[s<<8+b] = w
 		}
 	}
+}
+
+// buildClassTable builds the byte-class-compressed transition table for
+// automata that cannot use failTrans16. Only worthwhile when the class
+// row is at most half the full row: beyond that the compressed table
+// stops fitting meaningfully better in cache. Idempotent; must run after
+// addOutputFlags (flags ride along in the copied entries).
+//
+// A byte is live iff some state moves on it — equivalently, iff it
+// appears in some pattern; every dead byte sends every state to the
+// plain root and shares class 0. The builder passes the live set it
+// already knows; the decoder derives it with derivedLiveBytes.
+func (tr *Trie) buildClassTable(live *[256]bool) {
+	tr.failTransC = nil
+	if tr.failTrans16 != nil {
+		return
+	}
+
+	numClasses := 1
+	for b := range 256 {
+		if live[b] {
+			tr.classOf[b] = uint8(numClasses)
+			numClasses++
+		} else {
+			tr.classOf[b] = 0
+		}
+	}
+
+	stride := 1
+	shift := uint32(0)
+	for stride < numClasses {
+		stride <<= 1
+		shift++
+	}
+	if stride > 128 {
+		return
+	}
+
+	tr.classShift = shift
+	// Only live columns need copying: dead columns are all class 0,
+	// pre-set to the root. Iterating the live list keeps this pass
+	// O(states x liveBytes) instead of O(states x 256).
+	liveList := make([]int, 0, numClasses-1)
+	for b := range 256 {
+		if live[b] {
+			liveList = append(liveList, b)
+		}
+	}
+	tr.failTransC = make([]uint32, len(tr.failTrans)*stride)
+	for s := range tr.failTrans {
+		row := &tr.failTrans[s]
+		crow := tr.failTransC[s<<shift : s<<shift+stride]
+		crow[0] = rootState
+		for _, b := range liveList {
+			crow[tr.classOf[b]] = row[b]
+		}
+	}
+}
+
+// derivedLiveBytes recovers the live-byte set from a populated failTrans
+// (for decoded tries, where the builder's pattern knowledge is gone): a
+// byte is live iff any state's entry on it differs from a plain root
+// transition. Costs a full table scan; call only when buildClassTable
+// will actually build (failTrans16 == nil).
+func (tr *Trie) derivedLiveBytes() *[256]bool {
+	var live [256]bool
+	for s := range tr.failTrans {
+		row := &tr.failTrans[s]
+		for b := range 256 {
+			if row[b] != rootState {
+				live[b] = true
+			}
+		}
+	}
+	return &live
 }
 
 // setStopEntry caches the root transition on the single stop byte.
@@ -708,11 +796,104 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 		}
 	} else {
 		if len(input) >= dualTableMin && int(tr.maxLen)*4 < len(input)/2 && tr.rootDense(input) {
-			tr.matchDualTable32(input, buf)
+			if tr.failTransC != nil {
+				tr.matchDualTableC(input, buf)
+			} else {
+				tr.matchDualTable32(input, buf)
+			}
 		} else {
 			tr.matchTable(input, buf)
 		}
 	}
+}
+
+// scanRangeTableC is scanRangeTable32 on the class-compressed table.
+func (tr *Trie) scanRangeTableC(input []byte, i, to int, s uint32, minEmit int, raw []uint64) []uint64 {
+	ftBase := unsafe.Pointer(&tr.failTransC[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+	classOf := &tr.classOf
+	shift := tr.classShift
+
+	for ; i < to; i++ {
+		if s == rootState {
+			if tr.rootStop[input[i]] == 0 {
+				i = tr.skipRootTable(input, i)
+			}
+			if i >= to {
+				return raw
+			}
+		}
+
+		v := *(*uint32)(unsafe.Add(ftBase, (uintptr(s)<<shift+uintptr(classOf[input[i]]))<<2))
+		s = v & stateMask
+		if v&outputFlag != 0 && i >= minEmit {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
+				raw = append(raw, uint64(i), dp)
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				raw = append(raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+			}
+		}
+	}
+	return raw
+}
+
+// matchDualTableC is matchDualTable32 on the class-compressed table.
+func (tr *Trie) matchDualTableC(input []byte, buf *matchBuf) {
+	ftBase := unsafe.Pointer(&tr.failTransC[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+	classOf := &tr.classOf
+	shift := tr.classShift
+
+	inputLen := len(input)
+	mid := inputLen / 2
+	startB := max(mid-int(tr.maxLen)+1, 0)
+
+	sA, sB := rootState, rootState
+	iA, iB := 0, startB
+	rawA, rawB := buf.raw, buf.raw2
+
+	for iA < mid && iB < inputLen {
+		if sA == rootState && tr.rootStop[input[iA]] == 0 {
+			iA = tr.skipRootTable(input, iA)
+		} else {
+			v := *(*uint32)(unsafe.Add(ftBase, (uintptr(sA)<<shift+uintptr(classOf[input[iA]]))<<2))
+			sA = v & stateMask
+			if v&outputFlag != 0 {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
+					rawA = append(rawA, uint64(iA), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iA++
+		}
+
+		if sB == rootState && tr.rootStop[input[iB]] == 0 {
+			iB = tr.skipRootTable(input, iB)
+		} else {
+			v := *(*uint32)(unsafe.Add(ftBase, (uintptr(sB)<<shift+uintptr(classOf[input[iB]]))<<2))
+			sB = v & stateMask
+			if v&outputFlag != 0 && iB >= mid {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
+					rawB = append(rawB, uint64(iB), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iB++
+		}
+	}
+
+	rawA = tr.scanRangeTableC(input, iA, mid, sA, 0, rawA)
+	rawB = tr.scanRangeTableC(input, iB, inputLen, sB, mid, rawB)
+
+	buf.raw = append(rawA, rawB...)
+	buf.raw2 = rawB[:0]
 }
 
 // scanRangeTable16 runs the multi-stop-byte automaton over input[i:to),

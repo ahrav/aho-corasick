@@ -71,26 +71,38 @@ func TestDifferential32BitPaths(t *testing.T) {
 	sizes := []int{0, 1, 100, 1000, 4096, 5000, 20000, 80000}
 
 	for _, c := range cases {
-		trie := NewTrieBuilder().AddStrings(c.patterns).Build()
-		trie.failTrans16 = nil // force 32-bit scan paths
-		trie.setStopEntry()
-
-		for _, size := range sizes {
-			input := c.mkInput(size)
-			want := naiveMatch(c.patterns, input)
-			got := trie.Match(input)
-
-			if len(got) != len(want) {
-				t.Fatalf("%s size=%d: got %d matches, want %d", c.name, size, len(got), len(want))
-			}
-			for k, m := range got {
-				w := want[k]
-				if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
-					t.Fatalf("%s size=%d match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
-						c.name, size, k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
+		for _, classed := range []bool{false, true} {
+			trie := NewTrieBuilder().AddStrings(c.patterns).Build()
+			trie.failTrans16 = nil // force 32-bit scan paths
+			trie.setStopEntry()
+			if classed {
+				// Also exercise the byte-class-compressed loops
+				// (matchTableC, matchDualTableC, scanRangeTableC).
+				trie.buildClassTable(trie.derivedLiveBytes())
+				if trie.failTransC == nil {
+					t.Fatalf("%s: expected class table for small alphabet", c.name)
 				}
+			} else {
+				trie.failTransC = nil
 			}
-			trie.ReleaseMatches(got)
+
+			for _, size := range sizes {
+				input := c.mkInput(size)
+				want := naiveMatch(c.patterns, input)
+				got := trie.Match(input)
+
+				if len(got) != len(want) {
+					t.Fatalf("%s classed=%v size=%d: got %d matches, want %d", c.name, classed, size, len(got), len(want))
+				}
+				for k, m := range got {
+					w := want[k]
+					if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
+						t.Fatalf("%s classed=%v size=%d match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
+							c.name, classed, size, k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
+					}
+				}
+				trie.ReleaseMatches(got)
+			}
 		}
 	}
 }
