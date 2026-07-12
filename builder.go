@@ -4,21 +4,51 @@ import (
 	"bufio"
 	"encoding/hex"
 	"os"
-	"slices"
+	"sort"
 	"strings"
 )
 
 // state represents a node in the Aho-Corasick trie during construction.
 // Each state maintains links for pattern matching and failure transitions.
+// Child transitions are kept in a slice sorted by byte value: pattern
+// tries have tiny fan-out on average, so sorted-slice lookup beats a map
+// while keeping iteration order — and therefore state numbering and the
+// serialized form — deterministic.
 type state struct {
-	parent   *state          // Parent state in the trie
-	failLink *state          // Failure link for the Aho-Corasick algorithm
-	dictLink *state          // Dictionary link to next matching pattern
-	trans    map[byte]*state // Transitions to child states
-	id       uint32          // Unique identifier for this state
-	dict     uint32          // Length of pattern ending at this state (0 if none)
-	pattern  uint32          // Pattern number for matches at this state
-	value    byte            // Character value on incoming transition
+	parent   *state   // Parent state in the trie
+	failLink *state   // Failure link for the Aho-Corasick algorithm
+	dictLink *state   // Dictionary link to next matching pattern
+	children []*state // Child states sorted by transition byte value
+	id       uint32   // Unique identifier for this state
+	dict     uint32   // Length of pattern ending at this state (0 if none)
+	pattern  uint32   // Pattern number for matches at this state
+	value    byte     // Character value on incoming transition
+}
+
+// child returns the child reached on byte c, or nil.
+func (s *state) child(c byte) *state {
+	// Binary search; fan-out is usually small but can reach 256.
+	lo, hi := 0, len(s.children)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if s.children[mid].value < c {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	if lo < len(s.children) && s.children[lo].value == c {
+		return s.children[lo]
+	}
+	return nil
+}
+
+// insertChild adds t to s.children, keeping the slice sorted by value.
+func (s *state) insertChild(t *state) {
+	i := sort.Search(len(s.children), func(k int) bool { return s.children[k].value >= t.value })
+	s.children = append(s.children, nil)
+	copy(s.children[i+1:], s.children[i:])
+	s.children[i] = t
 }
 
 // TrieBuilder constructs an Aho-Corasick string matching automaton.
@@ -49,14 +79,9 @@ func NewTrieBuilder() *TrieBuilder {
 // and parent state. Returns the newly created state.
 func (tb *TrieBuilder) addState(value byte, parent *state) *state {
 	s := &state{
-		id:       uint32(len(tb.states)),
-		value:    value,
-		parent:   parent,
-		trans:    make(map[byte]*state),
-		dict:     0,
-		failLink: nil,
-		dictLink: nil,
-		pattern:  0,
+		id:     uint32(len(tb.states)),
+		value:  value,
+		parent: parent,
 	}
 	tb.states = append(tb.states, s)
 	return s
@@ -68,14 +93,13 @@ func (tb *TrieBuilder) addState(value byte, parent *state) *state {
 // pattern length and assigned a unique pattern number.
 func (tb *TrieBuilder) AddPattern(pattern []byte) *TrieBuilder {
 	s := tb.root
-	var t *state
-	var ok bool
 
 	// Follow/create the path for this pattern.
 	for _, c := range pattern {
-		if t, ok = s.trans[c]; !ok {
+		t := s.child(c)
+		if t == nil {
 			t = tb.addState(c, s)
-			s.trans[c] = t
+			s.insertChild(t)
 		}
 		s = t
 	}
@@ -158,11 +182,17 @@ func (tb *TrieBuilder) LoadStrings(path string) error {
 // Build constructs the final Trie structure.
 // This involves:
 //  1. Computing failure and dictionary links.
-//  2. Renumbering states in BFS order so frequently visited (shallow)
-//     states are packed together for cache and TLB locality.
-//  3. Converting the state graph into array-based representation.
-//  4. Pre-computing all possible transitions.
-//  5. Setting up object pools for match results.
+//  2. Renumbering states in BFS order (children visited in byte order)
+//     so frequently visited (shallow) states are packed together for
+//     cache and TLB locality, and so the numbering — and therefore the
+//     serialized form — is deterministic for a given pattern set.
+//  3. Converting the state graph into array-based representation: each
+//     state's transition row starts as a copy of its fail state's row
+//     (already complete, since fail states are strictly shallower and
+//     BFS builds shallow rows first) with the state's own children
+//     overwriting their bytes. This is the standard NFA-to-DFA row
+//     construction and avoids walking failure chains per (state, byte).
+//  4. Setting up object pools for match results.
 func (tb *TrieBuilder) Build() *Trie {
 	// Compute failure and dictionary links needed for the Aho-Corasick algorithm.
 	tb.computeFailLinks()
@@ -178,29 +208,16 @@ func (tb *TrieBuilder) Build() *Trie {
 		panic("ahocorasick: too many states to build trie (max 2^31)")
 	}
 
-	// Renumber states breadth-first. The automaton spends nearly all
-	// its time in shallow states; giving them adjacent ids packs their
-	// transition rows into a small contiguous prefix of failTrans.
-	//
-	// Children are visited in byte order: trans is a Go map, and ranging
-	// it directly would assign ids in randomized map order, making the
-	// dict/dictLink/failTrans arrays — and therefore Encode output —
-	// differ between builds of the same pattern set. Fixed order keeps
-	// serialized tries reproducible (checksums, cache keys).
+	// Renumber states breadth-first, children in byte order. The
+	// automaton spends nearly all its time in shallow states; giving
+	// them adjacent ids packs their transition rows into a small
+	// contiguous prefix of failTrans.
 	newID := make([]uint32, numStates)
 	order := make([]*state, 0, numStates)
 	order = append(order, tb.states[0], tb.root)
 	newID[tb.root.id] = 1
-	keys := make([]byte, 0, 256)
 	for qi := 1; qi < len(order); qi++ {
-		s := order[qi]
-		keys = keys[:0]
-		for b := range s.trans {
-			keys = append(keys, b)
-		}
-		slices.Sort(keys)
-		for _, b := range keys {
-			t := s.trans[b]
+		for _, t := range order[qi].children {
 			newID[t.id] = uint32(len(order))
 			order = append(order, t)
 		}
@@ -217,18 +234,39 @@ func (tb *TrieBuilder) Build() *Trie {
 	// Set up object pool for match buffer reuse.
 	trie.bufPool = newBufPool()
 
-	// Convert the state graph into arrays using the BFS numbering.
-	for i, s := range order {
+	// Row 0 (unused state) and the root row: every byte either enters a
+	// root child or self-loops at the root.
+	rootRow := &trie.failTrans[1]
+	for b := range 256 {
+		rootRow[b] = 1
+	}
+	for _, t := range tb.root.children {
+		rootRow[t.value] = newID[t.id]
+	}
+	row0 := &trie.failTrans[0]
+	for b := range 256 {
+		row0[b] = 1
+	}
+
+	// Fill metadata and rows in BFS order. order[i] has new id i.
+	trie.dict[1] = tb.root.dict
+	trie.pattern[1] = tb.root.pattern
+	for i := 2; i < numStates; i++ {
+		s := order[i]
 		trie.dict[i] = s.dict
 		trie.pattern[i] = s.pattern
 		if s.dictLink != nil {
 			trie.dictLink[i] = newID[s.dictLink.id]
 		}
-		// Pre-compute all possible byte transitions for this state.
-		for b := range 256 {
-			c := byte(b)
-			trie.failTrans[i][c] = newID[tb.computeFailTransition(s, c)]
+		// The fail state is strictly shallower, so its row (at a
+		// smaller BFS index) is already complete.
+		trie.failTrans[i] = trie.failTrans[newID[s.failLink.id]]
+		for _, t := range s.children {
+			trie.failTrans[i][t.value] = newID[t.id]
 		}
+	}
+	if tb.root.dictLink != nil {
+		trie.dictLink[1] = newID[tb.root.dictLink.id]
 	}
 
 	trie.addOutputFlags()
@@ -239,37 +277,24 @@ func (tb *TrieBuilder) Build() *Trie {
 	return trie
 }
 
-// computeFailTransition determines the next state for a given state and input byte.
-// It follows failure links until it finds a valid transition or reaches the root.
-// This is used to pre-compute all possible transitions during Build().
-func (tb *TrieBuilder) computeFailTransition(s *state, c byte) uint32 {
-	for t := s; t != nil; t = t.failLink {
-		if next, exists := t.trans[c]; exists {
-			return next.id
-		}
-	}
-	return tb.root.id
-}
-
 // computeFailLinks builds the failure links for the Aho-Corasick algorithm.
 // It performs a breadth-first traversal of the trie, setting each state's
 // failure link to the longest proper suffix that is also a prefix of some pattern.
 func (tb *TrieBuilder) computeFailLinks() {
-	queue := []*state{tb.root}
-	for len(queue) > 0 {
-		s := queue[0]
-		queue = queue[1:]
-
-		for _, t := range s.trans {
+	queue := make([]*state, 0, len(tb.states)-1)
+	queue = append(queue, tb.root)
+	for qi := 0; qi < len(queue); qi++ {
+		s := queue[qi]
+		for _, t := range s.children {
 			queue = append(queue, t)
-			// Follow failure links until we find a state that has a transition
-			// on the current character, or reach the root.
+			// Follow failure links until we find a state that has a
+			// transition on the current character, or reach the root.
 			fail := s.failLink
-			for fail != nil && fail.trans[t.value] == nil {
+			for fail != nil && fail.child(t.value) == nil {
 				fail = fail.failLink
 			}
 			if fail != nil {
-				t.failLink = fail.trans[t.value]
+				t.failLink = fail.child(t.value)
 			} else {
 				t.failLink = tb.root
 			}
