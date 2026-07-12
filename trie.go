@@ -707,17 +707,23 @@ func (tr *Trie) Match(input []byte) []*Match {
 		// several-fold and parallelism pays from 32KB, like the slower
 		// table-path automata.
 		pmin := 32 << 10
-		if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 &&
-			!looksDense(input, tr.rootStopBytes[0]) {
+		singleStop16 := tr.failTrans16 != nil && len(tr.rootStopBytes) == 1
+		if singleStop16 && !looksDense(input, tr.rootStopBytes[0]) {
 			pmin = 128 << 10
 		}
 		if len(input) >= pmin {
-			// The worker cap bounds wakeup and merge fan-in: 8 below
-			// 256KB, where each worker gets only a few KB of a fast
-			// scan, 32 above (scan throughput saturates near 32
-			// workers, measured on 48-core Zen 4).
+			// The worker cap bounds wakeup and merge fan-in. Above
+			// 256KB every family profits from 32 workers (scan
+			// throughput saturates near 32, measured on 48-core
+			// Zen 4). Below, 8 is right for fast skip-dominated scans
+			// (each worker gets only a few KB and wakeup latency
+			// dominates) — but table-family scans of input that
+			// actually leaves the root pay a dependent row load on
+			// most bytes and keep scaling past 8 even at 100KB. Input
+			// that never leaves the root (the table skip runs at
+			// ~4GB/s) stays at 8; rootLively separates the two.
 			maxP := 8
-			if len(input) >= 256<<10 {
+			if len(input) >= 256<<10 || (!singleStop16 && tr.rootLively(input)) {
 				maxP = 32
 			}
 			if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, maxP); p > 1 {
@@ -812,6 +818,39 @@ func (tr *Trie) rootDense(input []byte) bool {
 		}
 	}
 	return k >= rootDenseThreshold
+}
+
+// rootLivelyThreshold is the minimum number of root-leaving bytes in
+// the 192 sampled by rootLively (~2%) for a table-family scan to count
+// as row-load-bound rather than skip-dominated.
+const rootLivelyThreshold = 4
+
+// rootLively samples three 64-byte windows of input (head, middle,
+// tail) and reports whether enough bytes leave the root state that the
+// scan's cost is dependent row loads rather than the ~4GB/s table skip.
+// Same sampling shape as rootDense but smaller and with a lower bar:
+// this only picks a worker count, so the two regimes it separates are
+// far apart (prose over a dictionary samples 14-20%, a no-match byte
+// stream ~0%) and 192 samples resolve them. The whole-window early-out
+// keeps the cost near zero exactly for the fast skip-dominated scans
+// the sampling protects.
+func (tr *Trie) rootLively(input []byte) bool {
+	rootStop := &tr.rootStop
+	n := len(input)
+	k := 0
+	for _, b := range input[:64] {
+		k += int(rootStop[b])
+	}
+	if k == 0 {
+		return false
+	}
+	mid, tail := n/2-32, n-64
+	for _, w := range [2]int{mid, tail} {
+		for _, b := range input[w : w+64] {
+			k += int(rootStop[b])
+		}
+	}
+	return k >= rootLivelyThreshold
 }
 
 // matchSeq scans input sequentially into buf.
