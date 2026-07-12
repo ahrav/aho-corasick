@@ -119,3 +119,28 @@ geomean vs master estimated ≈ −50% or better, with no known regression rows.
 - ac-lab: own gates per its RESEARCH-LOG (race/checkptr/fuzz 300s); based on
   02f31eb — must be ported commit-by-commit onto master like our stack was
   (upstream sampler + Decode hardening interactions), re-benchmarked per step.
+
+---
+
+# Appendix: integration executed (combined chain results)
+
+The plan above was executed with evidence-driven adaptations. Final chain
+vs master (n=8 interleaved, quiet machine): **geomean −41.1%** — vs −36%
+for the pre-combination stack. Per-plan-item outcomes:
+
+| Plan item | Outcome | Evidence |
+|---|---|---|
+| skipbit | **KEPT, adapted** (`perf/20-skipbit-locate`): hybrid OR-reject + TrailingZeros-on-hit. ac-lab's unconditional form regressed pure-skip input +18% (a case its suite lacked). | Midsize −7.5%, spread10k −6.5%, pure-skip ~ |
+| unsafe walkTable | **KEPT** (`perf/21-unsafe-walktable`) | Walk/multi −3.7% (direct); unlocked the sampler finding |
+| (emergent) retire root-skip sampler | **KEPT** (`perf/22-retire-skip-sampler`): skipbit moved the skip's break-even; the density sampler now loses or ties at every point of upstream's own 1–100% density sweep. | Walk/multi −30%, sweeps −1.8..−2.3% or ~ |
+| depth1cont anchor rejection | **REJECTED** (`test/23-anchor-negative-pin` negative pin): its check costs +7.6..8.7% on bushy-depth-1 tries even when gated off, and its target regime gains only −1.7% on this stack (the IndexByte-escalated skip already makes false anchors cheap; ac-lab measured it against a weaker base). | LabAnchor bench pins the regime |
+| family worker cap | **KEPT, adapted** (`perf/24-lively-worker-cap`): rootLively content sampling (3×64B windows, ~2% threshold, early-out) instead of ac-lab's unconditional family cap, which regressed skip-dominated inputs +25..37%. | Midsize −16.5%, spread10k −17.8%, Big −5.7%; skip-dominated ~ |
+| premultiplied transC encoding | **KEPT** (`perf/25-premultiplied-classtable`): neutral on Zen 4 (scaled addressing folds the shift), kept for the measured −2..−3.5% on Graviton (keep-candidate's A/B). | MultiDense/4k −1.4%, else ~ |
+| index-based builder | **KEPT** (`perf/26-builder-index-fusion`): value-struct states + inline flags/ft16 fusion + memmove rows. | Build 10k −59% further; cumulative 175ms→7.9ms (−95.5%) |
+
+Final chain vs master, headline rows: SingleStop 100KB −24.8%, Big −16.6%,
+Walk/multi −36.0%, Dense −51.5%, MultiDense −55..−63%, Midsize −42.2%,
+OutputHeavy_DenseSpread −83.7%, spread10k −46.1%, 8MB −67%, no-match
+single −95.1%, Build −95.5%. Known residual costs: NoMatch/multi +4.9%
+(dispatch sampling, bounded), Skip2/ibsen +9% (±13–18% CI, family-cap
+trade documented in perf/24-lively-worker-cap).
