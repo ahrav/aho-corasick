@@ -44,7 +44,7 @@ func diffTriples(got, want [][3]uint32) int {
 	return -1
 }
 
-// Pattern-set bounds shared by patternSetFromRaw and encodeRaw. Small
+// Pattern-set bounds shared by patternSetFromRaw and encodeSeed. Small
 // enough that Build() stays sub-millisecond so the fuzzer runs thousands
 // of execs/sec and spends its budget exploring input boundaries, not
 // rebuilding maximal automata; still large enough to exercise dictLink
@@ -84,17 +84,17 @@ func patternSetFromRaw(raw []byte) []string {
 	return patterns
 }
 
-// encodeRaw is the inverse of patternSetFromRaw for seed construction: it
+// encodeSeed is the inverse of patternSetFromRaw for seed construction: it
 // emits a length-prefixed byte stream that decodes back to patterns.
 // Every pattern must be 1..maxPatLen bytes: the (len-1) prefix byte
 // round-trips through patternSetFromRaw's (raw[i]%maxPatLen)+1 only in
 // that range, so longer seeds would silently decode into a different
 // pattern stream and miss their intended coverage.
-func encodeRaw(patterns ...string) []byte {
+func encodeSeed(patterns ...string) []byte {
 	var raw []byte
 	for _, p := range patterns {
 		if len(p) < 1 || len(p) > maxPatLen {
-			panic("encodeRaw: seed pattern length outside 1..maxPatLen: " + p)
+			panic("encodeSeed: seed pattern length outside 1..maxPatLen: " + p)
 		}
 		raw = append(raw, byte(len(p)-1)) // (len-1)%maxPatLen+1 == len for len ≤ maxPatLen
 		raw = append(raw, p...)
@@ -134,27 +134,27 @@ func fillWithMatches(size int, filler byte, needle string) []byte {
 // gzip cost does not throttle exploration of the scan paths here.
 func FuzzMatch(f *testing.F) {
 	// >1 stop byte, small — table path (Wikipedia fixture).
-	f.Add(encodeRaw("a", "ab", "bab", "bc", "bca", "c", "caa"), []byte("abccab"))
+	f.Add(encodeSeed("a", "ab", "bab", "bc", "bca", "c", "caa"), []byte("abccab"))
 	// Patterns carrying NUL / 0xff bytes.
-	f.Add(encodeRaw("\x00\x00", "\x00a"), []byte("\x00\x00a\x00\x00"))
-	f.Add(encodeRaw("\xff\xff"), []byte("\xff\xff\xfe\xff\xff\xff"))
+	f.Add(encodeSeed("\x00\x00", "\x00a"), []byte("\x00\x00a\x00\x00"))
+	f.Add(encodeSeed("\xff\xff"), []byte("\xff\xff\xfe\xff\xff\xff"))
 	// 1 stop byte, small — stop-byte16 / walkStopByte path.
-	f.Add(encodeRaw("ab", "abc", "abca"), []byte("xxabcaxxabxx"))
+	f.Add(encodeSeed("ab", "abc", "abca"), []byte("xxabcaxxabxx"))
 	// 1 stop byte, large — dual-cursor path (≥1024, maxLen*4 < len/2).
-	f.Add(encodeRaw("ab", "abc", "abca"), fillWithMatches(4096, 'x', "abca"))
+	f.Add(encodeSeed("ab", "abc", "abca"), fillWithMatches(4096, 'x', "abca"))
 	// 1 stop byte, ≥16 KiB — parallel path over dual-cursor chunks.
-	f.Add(encodeRaw("ab", "abc", "abca"), fillWithMatches(40000, 'x', "abca"))
+	f.Add(encodeSeed("ab", "abc", "abca"), fillWithMatches(40000, 'x', "abca"))
 	// >1 stop byte, ≥16 KiB — parallel path over table chunks.
-	f.Add(encodeRaw("ab", "bc", "ca"), fillWithMatches(40000, 'z', "abca"))
+	f.Add(encodeSeed("ab", "bc", "ca"), fillWithMatches(40000, 'z', "abca"))
 	// Degenerate inputs.
-	f.Add(encodeRaw("a"), []byte(""))
-	f.Add(encodeRaw("aaaa"), bytes.Repeat([]byte("a"), 2048))
+	f.Add(encodeSeed("a"), []byte(""))
+	f.Add(encodeSeed("aaaa"), bytes.Repeat([]byte("a"), 2048))
 	// Dense matches at parallel/dual scale: an all-'a' input makes a
 	// match end at *every* position, so a match necessarily lands exactly
 	// on the dual midpoint and every parallel chunk boundary — the
 	// boundaries the drop/rebase and lane-B emit conditions turn on.
-	f.Add(encodeRaw("a", "aa", "aaa"), bytes.Repeat([]byte("a"), 20000))
-	f.Add(encodeRaw("ab", "b", "bab"), bytes.Repeat([]byte("ab"), 10000))
+	f.Add(encodeSeed("a", "aa", "aaa"), bytes.Repeat([]byte("a"), 20000))
+	f.Add(encodeSeed("ab", "b", "bab"), bytes.Repeat([]byte("ab"), 10000))
 
 	f.Fuzz(func(t *testing.T, raw, input []byte) {
 		patterns := patternSetFromRaw(raw)
@@ -213,10 +213,10 @@ func FuzzMatch(f *testing.F) {
 // slow scan-path fuzzing; input is bounded small since round-trip
 // correctness depends on the automaton, not the input length.
 func FuzzEncodeDecode(f *testing.F) {
-	f.Add(encodeRaw("or", "amet"), []byte("Lorem ipsum dolor sit amet"))
-	f.Add(encodeRaw("a", "ab", "bab", "bc", "bca", "c", "caa"), []byte("abccab"))
-	f.Add(encodeRaw("ab", "abc", "abca"), []byte("xxabcaxxabxx"))
-	f.Add(encodeRaw("\x00\x00", "\x00a"), []byte("\x00\x00a\x00\x00"))
+	f.Add(encodeSeed("or", "amet"), []byte("Lorem ipsum dolor sit amet"))
+	f.Add(encodeSeed("a", "ab", "bab", "bc", "bca", "c", "caa"), []byte("abccab"))
+	f.Add(encodeSeed("ab", "abc", "abca"), []byte("xxabcaxxabxx"))
+	f.Add(encodeSeed("\x00\x00", "\x00a"), []byte("\x00\x00a\x00\x00"))
 
 	f.Fuzz(func(t *testing.T, raw, input []byte) {
 		patterns := patternSetFromRaw(raw)

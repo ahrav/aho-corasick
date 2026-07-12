@@ -270,3 +270,28 @@ func readPatterns(path string) ([]string, error) {
 
 	return patterns, nil
 }
+
+// TestFailTrans16Gate verifies the half-width table is built exactly when the
+// 16-bit match path can use it: small trie with a single root stop byte. A
+// multi-stop-byte trie routes through matchTable, which reads the full-width
+// failTrans, so retaining failTrans16 there would be pure dead weight (512B
+// per state).
+func TestFailTrans16Gate(t *testing.T) {
+	// All patterns share the initial byte 'a': one root stop byte.
+	single := NewTrieBuilder().AddStrings([]string{"amet", "ambit", "arc"}).Build()
+	if single.failTrans16 == nil {
+		t.Error("single stop byte, small trie: expected failTrans16 to be built")
+	}
+	if got := single.MatchString("xx amet yy"); len(got) != 1 {
+		t.Errorf("single stop byte: expected 1 match, got %d", len(got))
+	}
+
+	// Distinct initial bytes: several root stop bytes, table path.
+	multi := NewTrieBuilder().AddStrings([]string{"or", "amet", "zebra"}).Build()
+	if multi.failTrans16 != nil {
+		t.Error("multiple stop bytes: expected failTrans16 to be skipped")
+	}
+	if got := multi.MatchString("zebra or amet"); len(got) != 3 {
+		t.Errorf("multiple stop bytes: expected 3 matches, got %d", len(got))
+	}
+}

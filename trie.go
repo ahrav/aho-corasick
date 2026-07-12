@@ -54,6 +54,8 @@ type Trie struct {
 	// loops when every state id fits in 15 bits (bit 15 carries the
 	// output flag). Rows are 512B instead of 1KB, halving the cache
 	// footprint of the table the serial dependency chain loads from.
+	// Built only when the single-stop-byte 16-bit matcher can use it
+	// (see buildFailTrans16); nil otherwise.
 	failTrans16 []uint16
 
 	// stopEntry16 is failTrans16[root][stopByte] when there is a single
@@ -154,25 +156,36 @@ func (tr *Trie) addOutputFlags() {
 			tr.maxLen = tr.dict[s]
 		}
 	}
+}
 
+// buildFailTrans16 builds the half-width transition table, but only when
+// the match loops can actually use it: matchSeq takes the 16-bit path
+// solely through matchStopByte16, which requires every state id to fit in
+// 15 bits AND a single root stop byte. Building it unconditionally would
+// retain 512B per state of dead weight on multi-stop-byte tries (e.g.
+// ~10MB on a 20K-state dictionary with several initial bytes). Must run
+// after addOutputFlags (reads the flag bits) and buildRootSkip (reads
+// rootStopBytes).
+func (tr *Trie) buildFailTrans16() {
 	tr.failTrans16 = nil
-	if len(tr.failTrans) <= 1<<15 {
-		tr.failTrans16 = make([]uint16, len(tr.failTrans)*256)
-		for s := range tr.failTrans {
-			for b := range 256 {
-				v := tr.failTrans[s][b]
-				w := uint16(v & stateMask)
-				if v&outputFlag != 0 {
-					w |= 1 << 15
-				}
-				tr.failTrans16[s<<8+b] = w
+	if len(tr.failTrans) > 1<<15 || len(tr.rootStopBytes) != 1 {
+		return
+	}
+	tr.failTrans16 = make([]uint16, len(tr.failTrans)*256)
+	for s := range tr.failTrans {
+		for b := range 256 {
+			v := tr.failTrans[s][b]
+			w := uint16(v & stateMask)
+			if v&outputFlag != 0 {
+				w |= 1 << 15
 			}
+			tr.failTrans16[s<<8+b] = w
 		}
 	}
 }
 
 // setStopEntry caches the root transition on the single stop byte.
-// Must run after both buildRootSkip and the failTrans16 build.
+// Must run after both buildRootSkip and buildFailTrans16.
 func (tr *Trie) setStopEntry() {
 	tr.stopEntry16 = 0
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
@@ -207,6 +220,41 @@ const (
 	swarOnes  uint64 = 0x0101010101010101
 	swarHighs uint64 = swarOnes << 7
 )
+
+// rootSkipSampleLen bounds how many root-state bytes walkTable samples,
+// inline, before it commits to whether the root self-loop skip pays off at
+// the input's stop-byte density.
+const rootSkipSampleLen = 4096
+
+// rootSkipSampler decides, from a bounded prefix of root-state runs, whether
+// walkTable's self-loop skip is paying off. Each observed run is `gap`
+// self-loop bytes followed by one stop byte that leaves the root. Once the
+// sample budget is spent, the skip is disabled if the stop-byte density
+// reached the ~1/16 break-even (stopBytes*16 >= rootBytes), where the skip
+// machinery costs about as much as the plain loop. The decision is invisible
+// in Match output — it only toggles an optimization — so it is asserted
+// directly in tests via this type.
+type rootSkipSampler struct {
+	budget    int
+	rootBytes int
+	stopBytes int
+	disabled  bool
+}
+
+// observe records one root-state run of `gap` self-loop bytes ending at a stop
+// byte and reports whether the skip should now be disabled. Runs after the
+// budget is spent are ignored, so the decision is made exactly once.
+func (s *rootSkipSampler) observe(gap int) bool {
+	if s.budget > 0 {
+		s.rootBytes += gap + 1
+		s.stopBytes++
+		s.budget -= gap + 1
+		if s.budget <= 0 && s.stopBytes*16 >= s.rootBytes {
+			s.disabled = true
+		}
+	}
+	return s.disabled
+}
 
 // skipRootTable returns the position of the first byte at or after i
 // that leaves the root state, or len(input) if there is none, using the
@@ -320,12 +368,30 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 	s := rootState
 
 	inputLen := len(input)
+
+	// Root self-loop skip, gated on stop-byte density measured INLINE so an
+	// early-terminating caller (Walk whose callback returns false, as
+	// MatchFirst does) never pays an up-front prefix scan. Begin optimistic;
+	// over the first rootSkipSampleLen root-state bytes, accumulate how many
+	// leave the root (stop bytes). If that density reaches the measured
+	// break-even (~1/16), where the skip machinery costs about as much as the
+	// plain loop, disable it for the remainder. The sampled bytes are ones the
+	// skip reads anyway, so this adds no extra reads and nothing before the
+	// first match.
+	skip := true
+	sampler := rootSkipSampler{budget: rootSkipSampleLen}
+
 	for i := 0; i < inputLen; i++ {
-		if s == rootState {
+		if skip && s == rootState {
 			// Fast path: while at the root, skip bytes that self-loop.
 			// The root state never produces a match, so no dict checks
 			// are needed until we leave it.
-			i = tr.skipRootTable(input, i)
+			j := tr.skipRootTable(input, i)
+			if j < inputLen && sampler.observe(j-i) {
+				// j-i self-looping bytes, then one stop byte at j.
+				skip = false
+			}
+			i = j
 			if i == inputLen {
 				return
 			}
@@ -418,6 +484,7 @@ func (tr *Trie) scanRange16(input []byte, i, to int, s uint32, minEmit int, raw 
 
 	c := tr.rootStopBytes[0]
 	cc := uint64(c) * swarOnes
+	stopE := uint32(tr.stopEntry16)
 
 	inputLen := len(input)
 	for ; i < to; i++ {
@@ -451,7 +518,13 @@ func (tr *Trie) scanRange16(input []byte, i, to int, s uint32, minEmit int, raw 
 			}
 		}
 
-		v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		// At the root the cursor is on the stop byte (the skip above
+		// guarantees input[i] == c), so the transition is the
+		// precomputed constant; see matchStopByte16.
+		v := stopE
+		if s != rootState {
+			v = uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		}
 		s = v &^ (1 << 15)
 		if v&(1<<15) != 0 && i >= minEmit {
 			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
@@ -665,11 +738,16 @@ func (tr *Trie) matchParallel(input []byte, p int) []*Match {
 			for drop < len(raw) && int(raw[drop])+scanStart < start {
 				drop += 2
 			}
-			raw = raw[drop:]
-			for idx := 0; idx < len(raw); idx += 2 {
+			for idx := drop; idx < len(raw); idx += 2 {
 				raw[idx] += uint64(scanStart)
 			}
-			buf.raw = raw
+			if drop > 0 {
+				// Shift the kept entries down instead of reslicing
+				// forward: assigning raw[drop:] back would move the
+				// pooled slice's base, permanently leaking the dropped
+				// prefix's capacity from the buffer's future lives.
+				buf.raw = raw[:copy(raw, raw[drop:])]
+			}
 		}(start, end, buf)
 	}
 
@@ -680,9 +758,18 @@ func (tr *Trie) matchParallel(input []byte, p int) []*Match {
 		tr.matchSeq(input[:min(chunk, len(input))], main)
 		wg.Wait()
 		for k := 1; k < p; k++ {
-			main.raw = append(main.raw, bufs[k].raw...)
-			bufs[k].raw = bufs[k].raw[:0]
-			tr.bufPool.Put(bufs[k])
+			wb := bufs[k]
+			main.raw = append(main.raw, wb.raw...)
+			wb.raw = wb.raw[:0]
+			// Worker buffers never materialize, so an arena filled in a
+			// previous life of this pooled buffer may still hold
+			// Match.match slices into an old input; clear it so the
+			// buffer doesn't retain that input while idle in the pool.
+			// (materialize keeps the arena tail beyond len zeroed, so
+			// clearing len and truncating leaves no stale entries.)
+			clear(wb.arena)
+			wb.arena = wb.arena[:0]
+			tr.bufPool.Put(wb)
 		}
 	} else {
 		main = tr.bufPool.Get().(*matchBuf)
@@ -778,9 +865,21 @@ func (tr *Trie) matchTable(input []byte, buf *matchBuf) {
 	s := rootState
 
 	inputLen := len(input)
+
+	// Root self-loop skip gated on stop-byte density measured inline; see
+	// walkTable. Sample the first rootSkipSampleLen root-state bytes, and
+	// disable the skip for the remainder once density reaches ~1/16.
+	skip := true
+	sampler := rootSkipSampler{budget: rootSkipSampleLen}
+
 	for i := 0; i < inputLen; i++ {
-		if s == rootState {
-			i = tr.skipRootTable(input, i)
+		if skip && s == rootState {
+			j := tr.skipRootTable(input, i)
+			if j < inputLen && sampler.observe(j-i) {
+				// j-i self-looping bytes, then one stop byte at j.
+				skip = false
+			}
+			i = j
 			if i == inputLen {
 				return
 			}
