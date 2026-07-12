@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/hex"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -154,12 +155,14 @@ func (tb *TrieBuilder) LoadStrings(path string) error {
 	return s.Err()
 }
 
-// Build constructs the final optimized Trie structure.
+// Build constructs the final Trie structure.
 // This involves:
-// 1. Computing failure and dictionary links.
-// 2. Converting the state graph into array-based representation.
-// 3. Pre-computing all possible transitions.
-// 4. Setting up object pools for match results.
+//  1. Computing failure and dictionary links.
+//  2. Renumbering states in BFS order so frequently visited (shallow)
+//     states are packed together for cache and TLB locality.
+//  3. Converting the state graph into array-based representation.
+//  4. Pre-computing all possible transitions.
+//  5. Setting up object pools for match results.
 func (tb *TrieBuilder) Build() *Trie {
 	// Compute failure and dictionary links needed for the Aho-Corasick algorithm.
 	tb.computeFailLinks()
@@ -175,8 +178,33 @@ func (tb *TrieBuilder) Build() *Trie {
 		panic("ahocorasick: too many states to build trie (max 2^31)")
 	}
 
-	trans := make([][256]uint32, numStates)
-	failLink := make([]uint32, numStates)
+	// Renumber states breadth-first. The automaton spends nearly all
+	// its time in shallow states; giving them adjacent ids packs their
+	// transition rows into a small contiguous prefix of failTrans.
+	//
+	// Children are visited in byte order: trans is a Go map, and ranging
+	// it directly would assign ids in randomized map order, making the
+	// dict/dictLink/failTrans arrays — and therefore Encode output —
+	// differ between builds of the same pattern set. Fixed order keeps
+	// serialized tries reproducible (checksums, cache keys).
+	newID := make([]uint32, numStates)
+	order := make([]*state, 0, numStates)
+	order = append(order, tb.states[0], tb.root)
+	newID[tb.root.id] = 1
+	keys := make([]byte, 0, 256)
+	for qi := 1; qi < len(order); qi++ {
+		s := order[qi]
+		keys = keys[:0]
+		for b := range s.trans {
+			keys = append(keys, b)
+		}
+		slices.Sort(keys)
+		for _, b := range keys {
+			t := s.trans[b]
+			newID[t.id] = uint32(len(order))
+			order = append(order, t)
+		}
+	}
 
 	// Initialize the array-based trie structure.
 	trie := &Trie{
@@ -189,28 +217,24 @@ func (tb *TrieBuilder) Build() *Trie {
 	// Set up object pool for match buffer reuse.
 	trie.bufPool = newBufPool()
 
-	// Convert the state graph into arrays.
-	for i, s := range tb.states {
+	// Convert the state graph into arrays using the BFS numbering.
+	for i, s := range order {
 		trie.dict[i] = s.dict
 		trie.pattern[i] = s.pattern
-		for c, t := range s.trans {
-			trans[i][c] = t.id
-		}
-		if s.failLink != nil {
-			failLink[i] = s.failLink.id
-		}
 		if s.dictLink != nil {
-			trie.dictLink[i] = s.dictLink.id
+			trie.dictLink[i] = newID[s.dictLink.id]
 		}
 		// Pre-compute all possible byte transitions for this state.
 		for b := range 256 {
 			c := byte(b)
-			trie.failTrans[i][c] = tb.computeFailTransition(s, c)
+			trie.failTrans[i][c] = newID[tb.computeFailTransition(s, c)]
 		}
 	}
 
 	trie.addOutputFlags()
 	trie.buildRootSkip()
+	trie.buildFailTrans16()
+	trie.setStopEntry()
 
 	return trie
 }

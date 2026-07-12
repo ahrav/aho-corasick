@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"math/bits"
 	"sync"
+	"unsafe"
 )
 
 const (
@@ -43,6 +44,20 @@ type Trie struct {
 	// self-loops with SWAR plus the vectorized bytes.IndexByte instead of
 	// the rootStop table. Empty for zero or several stop bytes.
 	rootStopBytes []byte
+
+	// failTrans16 is a half-width copy of failTrans used by the match
+	// loops when every state id fits in 15 bits (bit 15 carries the
+	// output flag). Rows are 512B instead of 1KB, halving the cache
+	// footprint of the table the serial dependency chain loads from.
+	// Built only when the single-stop-byte 16-bit matcher can use it
+	// (see buildFailTrans16); nil otherwise.
+	failTrans16 []uint16
+
+	// stopEntry16 is failTrans16[root][stopByte] when there is a single
+	// stop byte: the root always transitions to the same depth-1 state
+	// on it, so scan loops substitute this constant for the table load
+	// on every root re-entry, cutting a serial L1 access.
+	stopEntry16 uint16
 
 	bufPool sync.Pool // Pool of *matchBuf
 }
@@ -128,6 +143,41 @@ func (tr *Trie) addOutputFlags() {
 	tr.dictPat = make([]uint64, len(tr.dict))
 	for s := range tr.dict {
 		tr.dictPat[s] = uint64(tr.pattern[s])<<32 | uint64(tr.dict[s])
+	}
+}
+
+// buildFailTrans16 builds the half-width transition table, but only when
+// the match loops can actually use it: matchSeq takes the 16-bit path
+// solely through matchStopByte16, which requires every state id to fit in
+// 15 bits AND a single root stop byte. Building it unconditionally would
+// retain 512B per state of dead weight on multi-stop-byte tries (e.g.
+// ~10MB on a 20K-state dictionary with several initial bytes). Must run
+// after addOutputFlags (reads the flag bits) and buildRootSkip (reads
+// rootStopBytes).
+func (tr *Trie) buildFailTrans16() {
+	tr.failTrans16 = nil
+	if len(tr.failTrans) > 1<<15 || len(tr.rootStopBytes) != 1 {
+		return
+	}
+	tr.failTrans16 = make([]uint16, len(tr.failTrans)*256)
+	for s := range tr.failTrans {
+		for b := range 256 {
+			v := tr.failTrans[s][b]
+			w := uint16(v & stateMask)
+			if v&outputFlag != 0 {
+				w |= 1 << 15
+			}
+			tr.failTrans16[s<<8+b] = w
+		}
+	}
+}
+
+// setStopEntry caches the root transition on the single stop byte.
+// Must run after both buildRootSkip and buildFailTrans16.
+func (tr *Trie) setStopEntry() {
+	tr.stopEntry16 = 0
+	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
+		tr.stopEntry16 = tr.failTrans16[int(rootState)<<8+int(tr.rootStopBytes[0])]
 	}
 }
 
@@ -376,6 +426,10 @@ func (tr *Trie) Match(input []byte) []*Match {
 
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
+	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
+		tr.matchStopByte16(input, buf)
+		return
+	}
 	if len(tr.rootStopBytes) == 1 {
 		tr.matchStopByte(input, buf)
 	} else {
@@ -383,12 +437,90 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	}
 }
 
+// matchStopByte16 is matchStopByte on the half-width failTrans16 table.
+// See matchStopByte for why the loads use raw pointer arithmetic and for
+// the offset shifts.
+func (tr *Trie) matchStopByte16(input []byte, buf *matchBuf) {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	c := tr.rootStopBytes[0]
+	cc := uint64(c) * swarOnes
+	stopE := uint32(tr.stopEntry16)
+
+	s := rootState
+
+	inputLen := len(input)
+	for i := 0; i < inputLen; i++ {
+		var v uint32
+		if s == rootState {
+			if input[i] != c {
+				// See walkStopByte for the skip strategy.
+			skip:
+				for k := 0; ; k++ {
+					if i+8 > inputLen {
+						for i < inputLen && input[i] != c {
+							i++
+						}
+						break
+					}
+					w := binary.LittleEndian.Uint64(input[i:]) ^ cc
+					if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
+						i += bits.TrailingZeros64(m) >> 3
+						break
+					}
+					i += 8
+					if k == 3 {
+						j := bytes.IndexByte(input[i:], c)
+						if j < 0 {
+							i = inputLen
+						} else {
+							i += j
+						}
+						break skip
+					}
+				}
+				if i == inputLen {
+					return
+				}
+			}
+			// At the root the cursor is on the stop byte, so the
+			// transition is the precomputed constant: no table load
+			// on the serial chain.
+			v = stopE
+		} else {
+			v = uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		}
+		s = v &^ (1 << 15)
+		if v&(1<<15) != 0 {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
+				buf.raw = append(buf.raw, uint64(i), dp)
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				buf.raw = append(buf.raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+			}
+		}
+	}
+}
+
 // matchStopByte is the Match specialization of walkStopByte: matches are
 // appended straight to buf, avoiding an indirect callback call per match.
+//
+// The transition and emit loads use raw pointer arithmetic: state ids
+// come from masking a table entry, so the compiler cannot prove them in
+// bounds and would otherwise emit a bounds check on the critical
+// dependency chain. All entries are valid state ids by construction
+// (builder and decoder populate every slot), so the accesses are safe.
+// The offsets are byte offsets into each array: <<10 selects a 1KB
+// failTrans row (256 uint32) and <<2 the byte column within it; <<3
+// indexes a dictPat (uint64) and <<2 a dictLink (uint32). The failTrans16
+// path halves these to <<9 for the 512B row and <<1 for the uint16
+// column.
 func (tr *Trie) matchStopByte(input []byte, buf *matchBuf) {
-	failTrans := tr.failTrans
-	dictPat := tr.dictPat
-	dictLink := tr.dictLink
+	ftBase := unsafe.Pointer(&tr.failTrans[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
 
 	c := tr.rootStopBytes[0]
 	cc := uint64(c) * swarOnes
@@ -428,24 +560,25 @@ func (tr *Trie) matchStopByte(input []byte, buf *matchBuf) {
 			}
 		}
 
-		v := failTrans[s][input[i]]
+		v := *(*uint32)(unsafe.Add(ftBase, uintptr(s)<<10+uintptr(input[i])<<2))
 		s = v & stateMask
 		if v&outputFlag != 0 {
-			if dp := dictPat[s]; uint32(dp) != 0 {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
 				buf.raw = append(buf.raw, uint64(i), dp)
 			}
-			for u := dictLink[s]; u != nilState; u = dictLink[u] {
-				buf.raw = append(buf.raw, uint64(i), dictPat[u])
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				buf.raw = append(buf.raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
 			}
 		}
 	}
 }
 
-// matchTable is the Match specialization of walkTable.
+// matchTable is the Match specialization of walkTable. See matchStopByte
+// for why the loads use raw pointer arithmetic.
 func (tr *Trie) matchTable(input []byte, buf *matchBuf) {
-	failTrans := tr.failTrans
-	dictPat := tr.dictPat
-	dictLink := tr.dictLink
+	ftBase := unsafe.Pointer(&tr.failTrans[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
 
 	s := rootState
 
@@ -470,14 +603,14 @@ func (tr *Trie) matchTable(input []byte, buf *matchBuf) {
 			}
 		}
 
-		v := failTrans[s][input[i]]
+		v := *(*uint32)(unsafe.Add(ftBase, uintptr(s)<<10+uintptr(input[i])<<2))
 		s = v & stateMask
 		if v&outputFlag != 0 {
-			if dp := dictPat[s]; uint32(dp) != 0 {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
 				buf.raw = append(buf.raw, uint64(i), dp)
 			}
-			for u := dictLink[s]; u != nilState; u = dictLink[u] {
-				buf.raw = append(buf.raw, uint64(i), dictPat[u])
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				buf.raw = append(buf.raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
 			}
 		}
 	}

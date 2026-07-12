@@ -230,7 +230,11 @@ func (dec *decoder) decode(maxStates int) (*Trie, error) {
 		pattern:   pattern,
 		bufPool:   newBufPool(),
 	}
+	// Rebuild the derived acceleration tables (dictPat, failTrans16, root
+	// skip); they are recomputed on decode, not stored in the wire format.
 	trie.addOutputFlags()
 	trie.buildRootSkip()
+	trie.buildFailTrans16()
+	trie.setStopEntry()
 	return trie, nil
 }
