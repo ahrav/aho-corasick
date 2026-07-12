@@ -2,6 +2,7 @@ package ahocorasick
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"testing"
 )
@@ -130,18 +131,20 @@ func TestMatchParallelDifferential(t *testing.T) {
 		want := naiveMatch(tc.patterns, tc.input)
 
 		for _, p := range []int{2, 3, 4, 8} {
-			got := trie.matchParallel(tc.input, p)
-			if len(got) != len(want) {
-				t.Fatalf("%s p=%d: got %d matches, want %d", tc.name, p, len(got), len(want))
-			}
-			for k, m := range got {
-				w := want[k]
-				if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
-					t.Fatalf("%s p=%d match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
-						tc.name, p, k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
+			t.Run(fmt.Sprintf("%s/p=%d", tc.name, p), func(t *testing.T) {
+				got := trie.matchParallel(tc.input, p)
+				if len(got) != len(want) {
+					t.Fatalf("got %d matches, want %d", len(got), len(want))
 				}
-			}
-			trie.ReleaseMatches(got)
+				for k, m := range got {
+					w := want[k]
+					if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
+						t.Fatalf("match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
+							k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
+					}
+				}
+				trie.ReleaseMatches(got)
+			})
 		}
 	}
 }
