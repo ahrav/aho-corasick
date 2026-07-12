@@ -1,0 +1,90 @@
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     129	   2705828 ns/op	  96.88 MB/s	   74964 B/op	      17 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	    1171	    299674 ns/op	 678.56 MB/s	    1219 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    2995	    118043 ns/op	 297.75 MB/s	     500 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  721696	       495.0 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70628	      5087 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    6368	     54859 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     127	   2648486 ns/op	  98.98 MB/s	   75945 B/op	      17 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	    1185	    299960 ns/op	 677.91 MB/s	    1211 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    3001	    116303 ns/op	 302.20 MB/s	     496 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  719379	       494.8 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70826	      5098 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    6771	    101655 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     134	   4880691 ns/op	  53.71 MB/s	   72003 B/op	      17 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	    1216	    292088 ns/op	 696.18 MB/s	    1417 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    3038	    115980 ns/op	 303.04 MB/s	     472 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  710744	       498.9 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70682	      5089 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    6691	     51952 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     135	   2561010 ns/op	 102.36 MB/s	   71469 B/op	      17 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	    1208	    289904 ns/op	 701.43 MB/s	    1462 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    3026	    116121 ns/op	 302.68 MB/s	     495 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  725486	       496.5 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70468	      5094 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    6742	     52674 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     100	   3008005 ns/op	  87.15 MB/s	   97412 B/op	      20 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	    1177	    290426 ns/op	 700.17 MB/s	    1213 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    3025	    117236 ns/op	 299.80 MB/s	     502 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  713677	       500.7 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70797	      5075 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    6708	     54515 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     134	  11387348 ns/op	  23.02 MB/s	   72006 B/op	      17 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	     229	   1371223 ns/op	 148.30 MB/s	    3736 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    1438	    239644 ns/op	 146.66 MB/s	     518 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  718126	       496.3 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70454	      5087 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    3300	    109995 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     133	   2587300 ns/op	 101.32 MB/s	   72532 B/op	      17 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	    1194	    293106 ns/op	 693.77 MB/s	    1205 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    2960	    116013 ns/op	 302.96 MB/s	     497 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  715312	       497.4 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70486	      5068 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    6409	     53321 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	     134	   2678263 ns/op	  97.88 MB/s	   72251 B/op	      17 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	    1209	    291227 ns/op	 698.24 MB/s	    1201 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    3052	    115713 ns/op	 303.74 MB/s	     519 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  715624	       500.4 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70808	      5100 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    6961	     51934 ns/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkOutputHeavy_DenseSpread-8   	      28	  15519860 ns/op	  16.89 MB/s	  342335 B/op	      24 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/Ibsen_no-8         	     241	   1395363 ns/op	 145.73 MB/s	    3849 B/op	      16 allocs/op
+BenchmarkRootSkip_RealCorpora/spread10k_multistop/GPL_en-8           	    1549	    243160 ns/op	 144.54 MB/s	     555 B/op	       7 allocs/op
+BenchmarkMatchIbsen/1000-8                                           	  717373	       501.3 ns/op
+BenchmarkMatchIbsen/10000-8                                          	   70497	      5096 ns/op
+BenchmarkMatchIbsen/100000-8                                         	    3144	    112282 ns/op
+PASS
