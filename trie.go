@@ -538,6 +538,35 @@ func (tr *Trie) scanRange16(input []byte, i, to int, s uint32, minEmit int, raw 
 	return raw
 }
 
+// nextStop returns the position of the first occurrence of c at or after
+// i, or len(input) if there is none. Short gaps resolve in a few SWAR
+// words; long gaps fall through to the vectorized bytes.IndexByte, whose
+// setup cost would dominate typical short gaps. cc must be c replicated
+// into all eight lanes (uint64(c) * swarOnes).
+func nextStop(input []byte, i int, c byte, cc uint64) int {
+	inputLen := len(input)
+	for k := 0; ; k++ {
+		if i+8 > inputLen {
+			for i < inputLen && input[i] != c {
+				i++
+			}
+			return i
+		}
+		w := binary.LittleEndian.Uint64(input[i:]) ^ cc
+		if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
+			return i + bits.TrailingZeros64(m)>>3
+		}
+		i += 8
+		if k == 3 {
+			j := bytes.IndexByte(input[i:], c)
+			if j < 0 {
+				return inputLen
+			}
+			return i + j
+		}
+	}
+}
+
 // matchDualStopByte16 scans the two halves of input with two independent
 // automaton cursors interleaved in one loop. The state-transition load
 // chain is the serial bottleneck of a single scan; two chains overlap
@@ -565,18 +594,12 @@ func (tr *Trie) matchDualStopByte16(input []byte, buf *matchBuf) {
 	rawA, rawB := buf.raw, buf.raw2
 
 	for iA < mid && iB < inputLen {
-		// Lane A: one bounded step (a transition, or up to 8 skipped bytes).
+		// Lane A: one step — a whole root gap skip, or one transition.
+		// The gap search is bounded to lane A's half: a root gap carries
+		// no automaton state, so bytes at or past mid are lane B's alone
+		// (unbounded, a gap crossing mid would scan lane B's half twice).
 		if sA == rootState && input[iA] != c {
-			if iA+8 <= inputLen {
-				w := binary.LittleEndian.Uint64(input[iA:]) ^ cc
-				if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
-					iA += bits.TrailingZeros64(m) >> 3
-				} else {
-					iA += 8
-				}
-			} else {
-				iA++
-			}
+			iA = nextStop(input[:mid], iA, c, cc)
 		} else {
 			v := stopE
 			if sA != rootState {
@@ -596,16 +619,7 @@ func (tr *Trie) matchDualStopByte16(input []byte, buf *matchBuf) {
 
 		// Lane B: same step shape.
 		if sB == rootState && input[iB] != c {
-			if iB+8 <= inputLen {
-				w := binary.LittleEndian.Uint64(input[iB:]) ^ cc
-				if m := (w - swarOnes) & ^w & swarHighs; m != 0 {
-					iB += bits.TrailingZeros64(m) >> 3
-				} else {
-					iB += 8
-				}
-			} else {
-				iB++
-			}
+			iB = nextStop(input, iB, c, cc)
 		} else {
 			v := stopE
 			if sB != rootState {
