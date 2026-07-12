@@ -158,17 +158,16 @@ func (tr *Trie) addOutputFlags() {
 	}
 }
 
-// buildFailTrans16 builds the half-width transition table, but only when
-// the match loops can actually use it: matchSeq takes the 16-bit path
-// solely through matchStopByte16, which requires every state id to fit in
-// 15 bits AND a single root stop byte. Building it unconditionally would
-// retain 512B per state of dead weight on multi-stop-byte tries (e.g.
-// ~10MB on a 20K-state dictionary with several initial bytes). Must run
-// after addOutputFlags (reads the flag bits) and buildRootSkip (reads
-// rootStopBytes).
+// buildFailTrans16 builds the half-width transition table whenever every
+// state id fits in 15 bits. Both the single-stop-byte loops
+// (matchStopByte16, walkStopByte16) and the multi-stop table loops
+// (matchTable16, walkTable16) read it, so any trie small enough to have
+// one uses it on every scan; the 512B/state it costs on such tries buys
+// the halved cache footprint of the serial transition chain. Must run
+// after addOutputFlags (reads the flag bits).
 func (tr *Trie) buildFailTrans16() {
 	tr.failTrans16 = nil
-	if len(tr.failTrans) > 1<<15 || len(tr.rootStopBytes) != 1 {
+	if len(tr.failTrans) > 1<<15 {
 		return
 	}
 	tr.failTrans16 = make([]uint16, len(tr.failTrans)*256)
@@ -287,11 +286,106 @@ type WalkFn func(end, n, pattern uint32) bool
 // Walk runs the algorithm on a given output, calling the supplied callback function on every
 // match. The algorithm will terminate if the callback function returns false.
 func (tr *Trie) Walk(input []byte, fn WalkFn) {
+	if tr.failTrans16 != nil {
+		if len(tr.rootStopBytes) == 1 {
+			tr.walkStopByte16(input, fn)
+		} else {
+			tr.walkTable16(input, fn)
+		}
+		return
+	}
 	if len(tr.rootStopBytes) == 1 {
 		tr.walkStopByte(input, fn)
 		return
 	}
 	tr.walkTable(input, fn)
+}
+
+// walkStopByte16 is walkStopByte on the half-width failTrans16 table,
+// with the same root-transition constant (stopEntry16) and raw pointer
+// loads as matchStopByte16. See matchStopByte for the offset shifts.
+func (tr *Trie) walkStopByte16(input []byte, fn WalkFn) {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	c := tr.rootStopBytes[0]
+	cc := uint64(c) * swarOnes
+	stopE := uint32(tr.stopEntry16)
+
+	s := rootState
+
+	inputLen := len(input)
+	for i := 0; i < inputLen; i++ {
+		var v uint32
+		if s == rootState {
+			if input[i] != c {
+				i = nextStop(input, i, c, cc)
+				if i == inputLen {
+					return
+				}
+			}
+			v = stopE
+		} else {
+			v = uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		}
+		s = v &^ (1 << 15)
+		if v&(1<<15) != 0 {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
+				return
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				dp := *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3))
+				if !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// walkTable16 is walkTable on the half-width failTrans16 table with raw
+// pointer loads. See matchStopByte for the offset shifts.
+func (tr *Trie) walkTable16(input []byte, fn WalkFn) {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	s := rootState
+
+	inputLen := len(input)
+
+	// Root self-loop skip gated on stop-byte density measured inline; see
+	// walkTable.
+	skip := true
+	sampler := rootSkipSampler{budget: rootSkipSampleLen}
+
+	for i := 0; i < inputLen; i++ {
+		if skip && s == rootState {
+			j := tr.skipRootTable(input, i)
+			if j < inputLen && sampler.observe(j-i) {
+				skip = false
+			}
+			i = j
+			if i == inputLen {
+				return
+			}
+		}
+
+		v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		s = v &^ (1 << 15)
+		if v&(1<<15) != 0 {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
+				return
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				dp := *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3))
+				if !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // walkStopByte is Walk specialized for tries whose root leaves on a
@@ -507,6 +601,8 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	}
 	if len(tr.rootStopBytes) == 1 {
 		tr.matchStopByte(input, buf)
+	} else if tr.failTrans16 != nil {
+		tr.matchTable16(input, buf)
 	} else {
 		tr.matchTable(input, buf)
 	}
@@ -939,6 +1035,49 @@ func (tr *Trie) matchTable(input []byte, buf *matchBuf) {
 		v := *(*uint32)(unsafe.Add(ftBase, uintptr(s)<<10+uintptr(input[i])<<2))
 		s = v & stateMask
 		if v&outputFlag != 0 {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
+				buf.raw = append(buf.raw, uint64(i), dp)
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				buf.raw = append(buf.raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+			}
+		}
+	}
+}
+
+// matchTable16 is matchTable on the half-width failTrans16 table: same
+// rootStop-table skip, but the transition loads touch 512B rows instead
+// of 1KB, halving the cache footprint of the serial dependency chain.
+// See matchStopByte for why the loads use raw pointer arithmetic.
+func (tr *Trie) matchTable16(input []byte, buf *matchBuf) {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	s := rootState
+
+	inputLen := len(input)
+
+	// Root self-loop skip gated on stop-byte density measured inline; see
+	// walkTable.
+	skip := true
+	sampler := rootSkipSampler{budget: rootSkipSampleLen}
+
+	for i := 0; i < inputLen; i++ {
+		if skip && s == rootState {
+			j := tr.skipRootTable(input, i)
+			if j < inputLen && sampler.observe(j-i) {
+				skip = false
+			}
+			i = j
+			if i == inputLen {
+				return
+			}
+		}
+
+		v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		s = v &^ (1 << 15)
+		if v&(1<<15) != 0 {
 			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
 				buf.raw = append(buf.raw, uint64(i), dp)
 			}
