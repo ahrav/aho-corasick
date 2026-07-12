@@ -44,6 +44,17 @@ func diffTriples(got, want [][3]uint32) int {
 	return -1
 }
 
+// Pattern-set bounds shared by patternSetFromRaw and encodeRaw. Small
+// enough that Build() stays sub-millisecond so the fuzzer runs thousands
+// of execs/sec and spends its budget exploring input boundaries, not
+// rebuilding maximal automata; still large enough to exercise dictLink
+// chains, overlapping suffixes, and both the single- and multi-stop-byte
+// root layouts.
+const (
+	maxPatterns = 16
+	maxPatLen   = 12
+)
+
 // patternSetFromRaw decodes fuzz bytes into a valid pattern set with the
 // same shape the builder and naive reference both require: non-empty,
 // deduplicated (a repeated pattern string collapses to one trie state
@@ -52,15 +63,6 @@ func diffTriples(got, want [][3]uint32) int {
 // length-prefixed so any byte value — including NUL and 0xff — can appear
 // inside one, which the "Zeroes" and "Alphabetsize" fixtures show matters.
 func patternSetFromRaw(raw []byte) []string {
-	// Small enough that Build() stays sub-millisecond so the fuzzer runs
-	// thousands of execs/sec and spends its budget exploring input
-	// boundaries, not rebuilding maximal automata; still large enough to
-	// exercise dictLink chains, overlapping suffixes, and both the single-
-	// and multi-stop-byte root layouts.
-	const (
-		maxPatterns = 16
-		maxPatLen   = 12
-	)
 	var patterns []string
 	seen := make(map[string]bool)
 	for i := 0; i < len(raw) && len(patterns) < maxPatterns; {
@@ -84,11 +86,17 @@ func patternSetFromRaw(raw []byte) []string {
 
 // encodeRaw is the inverse of patternSetFromRaw for seed construction: it
 // emits a length-prefixed byte stream that decodes back to patterns.
-// Every pattern must be 1..32 bytes.
+// Every pattern must be 1..maxPatLen bytes: the (len-1) prefix byte
+// round-trips through patternSetFromRaw's (raw[i]%maxPatLen)+1 only in
+// that range, so longer seeds would silently decode into a different
+// pattern stream and miss their intended coverage.
 func encodeRaw(patterns ...string) []byte {
 	var raw []byte
 	for _, p := range patterns {
-		raw = append(raw, byte(len(p)-1)) // (len-1)%maxPatLen+1 == len; seeds stay ≤ maxPatLen
+		if len(p) < 1 || len(p) > maxPatLen {
+			panic("encodeRaw: seed pattern length outside 1..maxPatLen: " + p)
+		}
+		raw = append(raw, byte(len(p)-1)) // (len-1)%maxPatLen+1 == len for len ≤ maxPatLen
 		raw = append(raw, p...)
 	}
 	return raw

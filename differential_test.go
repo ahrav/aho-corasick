@@ -1,6 +1,7 @@
 package ahocorasick
 
 import (
+	"bytes"
 	"math/rand"
 	"testing"
 )
@@ -93,6 +94,51 @@ func TestDifferentialRandom(t *testing.T) {
 				if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
 					t.Fatalf("alpha=%q size=%d match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
 						alpha, size, k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
+				}
+			}
+			trie.ReleaseMatches(got)
+		}
+	}
+}
+
+// TestMatchParallelDifferential drives matchParallel with explicit worker
+// counts and compares against the naive reference. Match only dispatches
+// to matchParallel when runtime.GOMAXPROCS(0) > 1, so on a single-CPU
+// runner every GOMAXPROCS-gated caller (including the fuzz seeds and
+// TestDifferentialRandom) silently falls back to matchSeq; injecting p
+// here keeps the drop/rebase and chunk-boundary logic deterministically
+// covered regardless of the host's CPU count.
+func TestMatchParallelDifferential(t *testing.T) {
+	cases := []struct {
+		name     string
+		patterns []string
+		input    []byte
+	}{
+		// 1 root stop byte → dual-cursor matchSeq inside each chunk.
+		{"singleStopByte", []string{"ab", "abc", "abca"}, fillWithMatches(40000, 'x', "abca")},
+		// >1 root stop byte → table matchSeq inside each chunk.
+		{"multiStopByte", []string{"ab", "bc", "ca"}, fillWithMatches(40000, 'z', "abca")},
+		// A match ends at every position, so matches land exactly on
+		// every chunk boundary — the drop/rebase conditions all fire.
+		{"denseBoundaries", []string{"a", "aa", "aaa"}, bytes.Repeat([]byte("a"), 40000)},
+		// No matches at all: every worker returns an empty buffer.
+		{"noMatches", []string{"zzz"}, bytes.Repeat([]byte("a"), 40000)},
+	}
+
+	for _, tc := range cases {
+		trie := NewTrieBuilder().AddStrings(tc.patterns).Build()
+		want := naiveMatch(tc.patterns, tc.input)
+
+		for _, p := range []int{2, 3, 4, 8} {
+			got := trie.matchParallel(tc.input, p)
+			if len(got) != len(want) {
+				t.Fatalf("%s p=%d: got %d matches, want %d", tc.name, p, len(got), len(want))
+			}
+			for k, m := range got {
+				w := want[k]
+				if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
+					t.Fatalf("%s p=%d match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
+						tc.name, p, k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
 				}
 			}
 			trie.ReleaseMatches(got)
