@@ -690,9 +690,15 @@ func (tr *Trie) Match(input []byte) []*Match {
 			pmin = 128 << 10
 		}
 		if len(input) >= pmin {
-			// Cap at 8 workers: more of them mainly adds wakeup and
-			// steal latency while the post-scan merge is serial.
-			if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, 8); p > 1 {
+			// The worker cap bounds wakeup and merge fan-in: 8 below
+			// 256KB, where each worker gets only a few KB of a fast
+			// scan, 32 above (scan throughput saturates near 32
+			// workers, measured on 48-core Zen 4).
+			maxP := 8
+			if len(input) >= 256<<10 {
+				maxP = 32
+			}
+			if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, maxP); p > 1 {
 				return tr.matchParallel(input, p)
 			}
 		}
