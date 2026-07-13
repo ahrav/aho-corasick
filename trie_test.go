@@ -352,6 +352,18 @@ func TestParallelWorkersPolicy(t *testing.T) {
 		t.Fatalf("expected maxLen 9000, got %d", long.maxLen)
 	}
 
+	// A table-path trie with a 3000-byte pattern: overlap*4 is 11996,
+	// so on lively 192KiB input the widened cap of 24 would leave 8KiB
+	// chunks and matchParallel's overlap guard would serialize the
+	// scan; the shrink must back the count off to 16 (192KiB/11996)
+	// instead.
+	long3k := NewTrieBuilder().AddStrings([]string{
+		strings.Repeat("x", 3000), "ab", "cd",
+	}).Build()
+	if len(long3k.rootStopBytes) == 1 || long3k.maxLen != 3000 {
+		t.Fatal("expected a table-path trie with maxLen 3000")
+	}
+
 	// Stop byte 'a' at 1/16 bytes (~6%) sits under the ~10% density
 	// threshold; at 1/8 (~12.5%) it sits over.
 	sparse := func(size int) []byte {
@@ -359,6 +371,12 @@ func TestParallelWorkersPolicy(t *testing.T) {
 	}
 	dense := func(size int) []byte {
 		return bytes.Repeat([]byte("abcaxxxx"), size/8)
+	}
+	// No byte leaves the root of the multi trie ('a','b','c' are its
+	// stop bytes), so rootLively reports false and the slice-size ramp
+	// holds.
+	inert := func(size int) []byte {
+		return bytes.Repeat([]byte("xxxxxxxx"), size/8)
 	}
 
 	cases := []struct {
@@ -387,6 +405,11 @@ func TestParallelWorkersPolicy(t *testing.T) {
 		{"32-bit sparse below parallelSparseMin stays sequential", big, sparse(64 << 10), 8, 0},
 		{"32-bit sparse past parallelSparseMin parallelizes", big, sparse(160 << 10), 8, 8},
 		{"32-bit dense parallelizes from parallelMin", big, dense(40 << 10), 8, 5},
+		{"lively table scan takes the full cap on parallelChunk slices", multi, dense(160 << 10), 64, 20},
+		{"lively cap bounded by parallelChunk divisor", multi, dense(96 << 10), 64, 12},
+		{"root-inert table scan keeps the slice-size ramp", multi, inert(160 << 10), 64, 8},
+		{"lively 16-bit single-stop keeps the ramp", single, dense(160 << 10), 64, 8},
+		{"overlap shrink backs the lively cap off instead of losing parallelism", long3k, sparse(192 << 10), 64, 16},
 	}
 
 	for _, tc := range cases {
