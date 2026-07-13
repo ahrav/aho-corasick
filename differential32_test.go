@@ -127,26 +127,44 @@ func TestDifferential32BitPaths(t *testing.T) {
 	sizes := []int{0, 1, 100, 1000, 4096, 5000, 8191, 20000, 80000}
 
 	for _, c := range cases {
-		trie := NewTrieBuilder().AddStrings(c.patterns).Build()
-		trie.failTrans16 = nil // force 32-bit scan paths
-		trie.setStopEntry()
-
-		for _, size := range sizes {
-			input := c.mkInput(size)
-			want := naiveMatch(c.patterns, input)
-			got := trie.Match(input)
-
-			if len(got) != len(want) {
-				t.Fatalf("%s size=%d: got %d matches, want %d", c.name, size, len(got), len(want))
-			}
-			for k, m := range got {
-				w := want[k]
-				if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
-					t.Fatalf("%s size=%d match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
-						c.name, size, k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
+		for _, classed := range []bool{false, true} {
+			trie := NewTrieBuilder().AddStrings(c.patterns).Build()
+			trie.failTrans16 = nil // force 32-bit scan paths
+			trie.setStopEntry()
+			if classed {
+				// Also exercise the byte-class-compressed loops
+				// (matchDualTableC, scanRangeTableC). Single-stop
+				// tries take matchStopByte and never read the class
+				// table, so buildClassTable must refuse to build one
+				// for them; there is no classed path to exercise.
+				trie.buildClassTable(trie.derivedLiveBytes())
+				if wantTable := len(trie.rootStopBytes) != 1; (trie.failTransC != nil) != wantTable {
+					t.Fatalf("%s: failTransC != nil is %v, want %v", c.name, !wantTable, wantTable)
 				}
+				if trie.failTransC == nil {
+					continue
+				}
+			} else {
+				trie.failTransC = nil
 			}
-			trie.ReleaseMatches(got)
+
+			for _, size := range sizes {
+				input := c.mkInput(size)
+				want := naiveMatch(c.patterns, input)
+				got := trie.Match(input)
+
+				if len(got) != len(want) {
+					t.Fatalf("%s classed=%v size=%d: got %d matches, want %d", c.name, classed, size, len(got), len(want))
+				}
+				for k, m := range got {
+					w := want[k]
+					if m.Pos() != w[0] || m.Pattern() != w[1] || uint32(len(m.Match())) != w[2] {
+						t.Fatalf("%s classed=%v size=%d match %d: got (pos=%d pat=%d len=%d), want (pos=%d pat=%d len=%d)",
+							c.name, classed, size, k, m.Pos(), m.Pattern(), len(m.Match()), w[0], w[1], w[2])
+					}
+				}
+				trie.ReleaseMatches(got)
+			}
 		}
 	}
 }

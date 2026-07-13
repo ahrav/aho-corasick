@@ -272,6 +272,18 @@ func (tb *TrieBuilder) Build() *Trie {
 	trie.addOutputFlags()
 	trie.buildRootSkip()
 	trie.buildFailTrans16()
+	// Compute the live-byte set only when a scan path exists to read the
+	// class table; single-stop and failTrans16 tries never load it, and
+	// building it anyway would retain up to 512B/state of dead weight.
+	if trie.classTableUsable() {
+		var live [256]bool
+		for _, s := range tb.states {
+			for _, t := range s.children {
+				live[t.value] = true
+			}
+		}
+		trie.buildClassTable(&live)
+	}
 	trie.setStopEntry()
 
 	return trie
