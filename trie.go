@@ -109,8 +109,6 @@ func (b *matchBuf) reset() {
 	b.ptrs = b.ptrs[:0]
 }
 
-// materialize builds the arena of Match values and the pointer slice
-// from the recorded raw pairs.
 // sizeArena prepares arena and ptrs for exactly n Match values, keeping
 // capacity and clearing any stale tail (stale Match values would keep
 // the previous input alive via their match slices while the buffer sits
