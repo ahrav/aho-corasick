@@ -417,15 +417,51 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 // below it, goroutine startup outweighs the scan work.
 const parallelChunk = 8 << 10
 
+// parallelMin is the minimum input size for the parallel scan. The
+// table-path automata scan slowly enough serially that workers pay for
+// themselves from 32KB, as do the single-stop-byte automata on
+// stop-byte-dense input, where excursions drop serial throughput
+// several-fold.
+const parallelMin = 32 << 10
+
+// parallelSparseMin is the minimum input size for the parallel scan on
+// a single-stop-byte automaton over stop-byte-sparse input. Both scan
+// widths of that family (matchStopByte and matchStopByte16) cover
+// sparse input at ~2GB/s serially through the same SWAR/IndexByte root
+// skip, so goroutine startup, the redundant overlap re-scans, and the
+// merge fan-in only pay for themselves near 128KB.
+const parallelSparseMin = 128 << 10
+
+// parallelWorkers reports how many workers Match should hand input to
+// matchParallel with, or 0 for a sequential scan. maxProcs is the
+// caller's runtime.GOMAXPROCS(0), taken as a parameter so tests can pin
+// the policy across CPU counts. The worker gate runs before the density
+// sample so a process that can never parallelize (maxProcs 1) does not
+// pay for sampling it cannot act on.
+func (tr *Trie) parallelWorkers(input []byte, maxProcs int) int {
+	if len(input) < parallelMin {
+		return 0
+	}
+	// Cap at 8 workers: more of them mainly adds wakeup and steal
+	// latency while the post-scan merge is serial.
+	p := min(maxProcs, len(input)/parallelChunk, 8)
+	if p < 2 {
+		return 0
+	}
+	// Between the two thresholds, a single-stop-byte automaton stays
+	// sequential on sparse input; past parallelSparseMin both floors
+	// are cleared, so the sample is skipped outright.
+	if len(input) < parallelSparseMin && len(tr.rootStopBytes) == 1 &&
+		!looksDense(input, tr.rootStopBytes[0]) {
+		return 0
+	}
+	return p
+}
+
 // Match runs the Aho-Corasick string-search algorithm on a byte input.
 func (tr *Trie) Match(input []byte) []*Match {
-	if len(input) >= 2*parallelChunk {
-		// Workers dual-scan their chunks, so more of them mainly adds
-		// wakeup and steal latency; cap at 8 to keep each chunk large
-		// enough to amortize goroutine startup.
-		if p := min(runtime.GOMAXPROCS(0), len(input)/parallelChunk, 8); p > 1 {
-			return tr.matchParallel(input, p)
-		}
+	if p := tr.parallelWorkers(input, runtime.GOMAXPROCS(0)); p > 0 {
+		return tr.matchParallel(input, p)
 	}
 
 	buf := tr.bufPool.Get().(*matchBuf)
