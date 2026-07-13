@@ -66,9 +66,65 @@ func TestDifferential32BitPaths(t *testing.T) {
 				return input
 			},
 		},
+		{
+			// Dense sample windows but asymmetric root gaps: the first
+			// half is ~half filler while the second half is nearly all
+			// stop bytes, so rootDense still passes but lane A root-skips
+			// through its gaps and exits the interleaved loop early,
+			// leaving scanRangeTable32 a substantial lane-B remainder
+			// with gaps of its own — the skipRootTable and early-return
+			// branches the lockstep dense case can never reach. A
+			// pattern planted across mid pins the lane boundary: matches
+			// ending < mid belong to lane A, >= mid to lane B.
+			"multi-stop-gappy",
+			[]string{"ab", "bc", "ca", "abc", "cab", "bbb"},
+			func(n int) []byte {
+				input := make([]byte, n)
+				for i := range input {
+					gap := 8 // first half: ~half the bytes are root gaps
+					if i >= n/2 {
+						gap = 14 // second half: occasional gaps only
+					}
+					if rng.Intn(16) < gap {
+						input[i] = byte('a' + rng.Intn(3))
+					} else {
+						input[i] = byte('x' + rng.Intn(8))
+					}
+				}
+				if n >= 8 {
+					copy(input[n/2-1:], "cab")
+					// Deterministic filler tail: the lane-B finisher's
+					// root skip finds no further stop byte and takes the
+					// i >= to early return.
+					input[n-2], input[n-1] = 'x', 'y'
+				}
+				return input
+			},
+		},
+		{
+			// A long root gap spanning mid: rootDense still passes on
+			// the dense head/tail windows, lane A's bounded root skip
+			// stops at exactly mid, and lane B enters mid-gap and skips
+			// to the gap's far edge — the lane-boundary geometry the
+			// other fixtures never produce.
+			"multi-stop-midgap",
+			[]string{"ab", "bc", "ca", "abc", "cab", "bbb"},
+			func(n int) []byte {
+				input := make([]byte, n)
+				for i := range input {
+					input[i] = byte('a' + rng.Intn(3))
+				}
+				if n >= 1024 {
+					for i := n/2 - 200; i < n/2+200; i++ {
+						input[i] = 'z'
+					}
+				}
+				return input
+			},
+		},
 	}
 
-	sizes := []int{0, 1, 100, 1000, 4096, 5000, 20000, 80000}
+	sizes := []int{0, 1, 100, 1000, 4096, 5000, 8191, 20000, 80000}
 
 	for _, c := range cases {
 		for _, classed := range []bool{false, true} {
@@ -77,10 +133,16 @@ func TestDifferential32BitPaths(t *testing.T) {
 			trie.setStopEntry()
 			if classed {
 				// Also exercise the byte-class-compressed loops
-				// (matchTableC, matchDualTableC, scanRangeTableC).
+				// (matchDualTableC, scanRangeTableC). Single-stop
+				// tries take matchStopByte and never read the class
+				// table, so buildClassTable must refuse to build one
+				// for them; there is no classed path to exercise.
 				trie.buildClassTable(trie.derivedLiveBytes())
+				if wantTable := len(trie.rootStopBytes) != 1; (trie.failTransC != nil) != wantTable {
+					t.Fatalf("%s: failTransC != nil is %v, want %v", c.name, !wantTable, wantTable)
+				}
 				if trie.failTransC == nil {
-					t.Fatalf("%s: expected class table for small alphabet", c.name)
+					continue
 				}
 			} else {
 				trie.failTransC = nil

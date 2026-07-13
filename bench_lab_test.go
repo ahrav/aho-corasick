@@ -19,6 +19,10 @@ var labState struct {
 	ibsen    []byte
 }
 
+// labLoad returns the shared corpus, reading it from disk on first use.
+// The cache makes later calls cheap but means the first timed invocation
+// of a run would include file I/O: benchmarks that time work in their
+// own body (no sub-benchmarks) must call b.ResetTimer() after setup.
 func labLoad(b *testing.B) ([]string, []byte) {
 	if !labState.loaded {
 		p, err := readPatterns("./test_data/NSF-ordlisten.cleaned.txt")
@@ -37,8 +41,10 @@ func labLoad(b *testing.B) ([]string, []byte) {
 }
 
 // stride10k picks every 10th pattern: spreads first bytes across the
-// alphabet so the automaton has many root stop bytes while staying under
-// 2^15 states (failTrans16 exists but the multi-stop table path is used).
+// alphabet so the automaton has many root stop bytes. The result is
+// large (~64k states on the NSF corpus, above the 2^15 failTrans16
+// limit, so 32-bit rows only); BenchmarkLabMultiSmall covers the
+// 16-bit-eligible multi-stop shape.
 func stride10k(patterns []string) []string {
 	out := make([]string, 0, 10000)
 	for i := 0; i < len(patterns) && len(out) < 10000; i += 10 {
@@ -56,6 +62,22 @@ func benchMatch(b *testing.B, tr *Trie, input []byte) {
 	}
 }
 
+// benchMatchAt times the scan at a fixed worker count, bypassing Match's
+// input-size/GOMAXPROCS dispatch. matchParallel with p=1 spawns no
+// goroutines and runs a single matchSeq over the whole input, so it is
+// the forced-sequential case; p>1 forces exactly p workers. This lets
+// the crossover sweeps pit both implementations against each other at
+// every size — including below Match's 16 KiB dispatch floor — with
+// results that do not depend on the host's GOMAXPROCS.
+func benchMatchAt(b *testing.B, tr *Trie, input []byte, p int) {
+	b.SetBytes(int64(len(input)))
+	b.ReportAllocs()
+	for n := 0; n < b.N; n++ {
+		ms := tr.matchParallel(input, p)
+		tr.ReleaseMatches(ms)
+	}
+}
+
 // Single-stop-byte automaton (sorted 10k prefix), 16-bit paths.
 func BenchmarkLabSingleStop(b *testing.B) {
 	patterns, ibsen := labLoad(b)
@@ -65,12 +87,14 @@ func BenchmarkLabSingleStop(b *testing.B) {
 	b.Run("ibsen-100k", func(b *testing.B) { benchMatch(b, tr, ibsen[:100000]) })
 }
 
-// Multi-stop-byte automaton, <2^15 states: today takes 32-bit matchTable.
+// Multi-stop-byte automaton, >2^15 states: 32-bit matchTable rows. (See
+// BenchmarkLabMultiSmall for the small 16-bit-eligible multi-stop shape.)
 func BenchmarkLabMultiStop(b *testing.B) {
 	patterns, ibsen := labLoad(b)
 	tr := NewTrieBuilder().AddStrings(stride10k(patterns)).Build()
-	if len(tr.rootStopBytes) == 1 {
-		b.Fatal("expected multi-stop automaton")
+	if len(tr.rootStopBytes) == 1 || len(tr.failTrans) <= 1<<15 {
+		b.Fatalf("want large multi-stop automaton, got states=%d stops=%d",
+			len(tr.failTrans), countStop(tr))
 	}
 	b.Run("ibsen-1k", func(b *testing.B) { benchMatch(b, tr, ibsen[:1000]) })
 	b.Run("ibsen-4k", func(b *testing.B) { benchMatch(b, tr, ibsen[:4000]) })
@@ -142,6 +166,7 @@ func BenchmarkLabMatchFirstLate(b *testing.B) {
 	tr := NewTrieBuilder().AddString("imorges").Build() // first occurrence at byte 99805
 	input := ibsen[:100000]
 	b.SetBytes(int64(len(input)))
+	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		if m := tr.MatchFirst(input); m == nil {
 			b.Fatal("expected a match")
@@ -153,14 +178,18 @@ func BenchmarkLabMatchFirstLate(b *testing.B) {
 func BenchmarkLabBuild10k(b *testing.B) {
 	patterns, _ := labLoad(b)
 	b.ReportAllocs()
+	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		NewTrieBuilder().AddStrings(patterns[:10000]).Build()
 	}
 }
 
-// Parallel crossover: same automaton, growing inputs. Run with -cpu 1
-// (forces sequential) vs default (parallel path for >=16KB) to find the
-// real crossover point of matchParallel.
+// Parallel crossover: same automaton, growing inputs. Per size, the
+// "dispatch" run measures the production Match policy (sequential vs
+// parallel chosen from input length and GOMAXPROCS), while "seq" and
+// "p<N>" force one implementation at an explicit worker count so the
+// true crossover of matchParallel is visible on any host, including
+// below the 16 KiB dispatch floor.
 func BenchmarkLabParaCross(b *testing.B) {
 	patterns, ibsen := labLoad(b)
 	tr := NewTrieBuilder().AddStrings(patterns[:10000]).Build()
@@ -168,13 +197,19 @@ func BenchmarkLabParaCross(b *testing.B) {
 	for len(big) < 8<<20 {
 		big = append(big, ibsen...)
 	}
-	for _, size := range []int{16 << 10, 32 << 10, 48 << 10, 64 << 10, 96 << 10, 128 << 10, 1 << 19, 1 << 21, 1 << 23} {
-		b.Run(fmt.Sprintf("%dk", size>>10), func(b *testing.B) { benchMatch(b, tr, big[:size]) })
+	for _, size := range []int{4 << 10, 8 << 10, 16 << 10, 32 << 10, 48 << 10, 64 << 10, 96 << 10, 128 << 10, 1 << 19, 1 << 21, 1 << 23} {
+		input := big[:size]
+		b.Run(fmt.Sprintf("%dk-dispatch", size>>10), func(b *testing.B) { benchMatch(b, tr, input) })
+		b.Run(fmt.Sprintf("%dk-seq", size>>10), func(b *testing.B) { benchMatchAt(b, tr, input, 1) })
+		for _, p := range []int{2, 4, 8} {
+			b.Run(fmt.Sprintf("%dk-p%d", size>>10, p), func(b *testing.B) { benchMatchAt(b, tr, input, p) })
+		}
 	}
 }
 
 // Multi-stop parallel crossover (slower per-byte scan => parallelism may
-// pay earlier than for the single-stop path).
+// pay earlier than for the single-stop path). Same mode split as
+// BenchmarkLabParaCross.
 func BenchmarkLabParaCrossMulti(b *testing.B) {
 	patterns, ibsen := labLoad(b)
 	tr := NewTrieBuilder().AddStrings(stride10k(patterns)).Build()
@@ -182,8 +217,13 @@ func BenchmarkLabParaCrossMulti(b *testing.B) {
 	for len(big) < 1<<20 {
 		big = append(big, ibsen...)
 	}
-	for _, size := range []int{16 << 10, 32 << 10, 64 << 10, 128 << 10, 256 << 10, 512 << 10} {
-		b.Run(fmt.Sprintf("%dk", size>>10), func(b *testing.B) { benchMatch(b, tr, big[:size]) })
+	for _, size := range []int{4 << 10, 8 << 10, 16 << 10, 32 << 10, 64 << 10, 128 << 10, 256 << 10, 512 << 10} {
+		input := big[:size]
+		b.Run(fmt.Sprintf("%dk-dispatch", size>>10), func(b *testing.B) { benchMatch(b, tr, input) })
+		b.Run(fmt.Sprintf("%dk-seq", size>>10), func(b *testing.B) { benchMatchAt(b, tr, input, 1) })
+		for _, p := range []int{2, 4, 8} {
+			b.Run(fmt.Sprintf("%dk-p%d", size>>10, p), func(b *testing.B) { benchMatchAt(b, tr, input, p) })
+		}
 	}
 }
 
