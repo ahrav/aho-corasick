@@ -46,6 +46,12 @@ type Trie struct {
 	// the rootStop table. Empty for zero or several stop bytes.
 	rootStopBytes []byte
 
+	// skipBytes holds all stop bytes when there are two to four of
+	// them: long root gaps then escape from the byte-table skip to one
+	// windowed bytes.IndexByte pass per value, trading k vectorized
+	// scans for a table walk. Empty otherwise.
+	skipBytes []byte
+
 	// maxLen is the longest pattern length. Parallel scans start each
 	// chunk maxLen-1 bytes early so boundary-spanning matches are found.
 	maxLen uint32
@@ -196,20 +202,26 @@ func (tr *Trie) setStopEntry() {
 // Must be called after failTrans is fully populated.
 func (tr *Trie) buildRootSkip() {
 	tr.rootStopBytes = nil
+	tr.skipBytes = nil
+	var stops []byte
 	for b := range 256 {
 		if tr.failTrans[rootState][b]&stateMask != rootState {
 			tr.rootStop[b] = 1
-			tr.rootStopBytes = append(tr.rootStopBytes, byte(b))
+			stops = append(stops, byte(b))
 		} else {
 			tr.rootStop[b] = 0
 		}
 	}
 	// With a single stop byte, the scan loops skip root self-loops with
 	// an inline SWAR word scan plus the vectorized bytes.IndexByte (see
-	// walkStopByte). Several stop bytes would need one IndexByte pass per
-	// value, so fall back to the rootStop table.
-	if len(tr.rootStopBytes) > 1 {
-		tr.rootStopBytes = nil
+	// walkStopByte). With two to four, the table skip escapes to
+	// windowed per-value IndexByte passes on long gaps (skipRootTable).
+	// Beyond that the k passes stop paying for themselves.
+	switch {
+	case len(stops) == 1:
+		tr.rootStopBytes = stops
+	case len(stops) <= 4:
+		tr.skipBytes = stops
 	}
 }
 
@@ -257,10 +269,34 @@ func (s *rootSkipSampler) observe(gap int) bool {
 
 // skipRootTable returns the position of the first byte at or after i
 // that leaves the root state, or len(input) if there is none, using the
-// rootStop lookup table.
+// rootStop lookup table. When the stop set is small (skipBytes
+// non-empty), gaps that outlast the first 128 table-scanned bytes escape
+// to windowed per-value bytes.IndexByte passes: k vectorized scans beat
+// the byte-table walk severalfold, and windowing bounds the work a rare
+// value's scan can waste when another stop byte hits early.
 func (tr *Trie) skipRootTable(input []byte, i int) int {
 	rootStop := &tr.rootStop
 	inputLen := len(input)
+	if tr.skipBytes != nil {
+		lim := i + 128
+		for i+8 <= inputLen {
+			m := rootStop[input[i]] | rootStop[input[i+1]] |
+				rootStop[input[i+2]] | rootStop[input[i+3]] |
+				rootStop[input[i+4]] | rootStop[input[i+5]] |
+				rootStop[input[i+6]] | rootStop[input[i+7]]
+			if m != 0 {
+				break
+			}
+			i += 8
+			if i >= lim {
+				return tr.skipRootIndex(input, i)
+			}
+		}
+		for i < inputLen && rootStop[input[i]] == 0 {
+			i++
+		}
+		return i
+	}
 	// Eight lookups are OR-ed together so the common all-skippable
 	// case costs a single branch per eight input bytes.
 	for i+8 <= inputLen {
@@ -277,6 +313,31 @@ func (tr *Trie) skipRootTable(input []byte, i int) int {
 		i++
 	}
 	return i
+}
+
+// skipRootIndex finds the next stop byte at or after i with one
+// bytes.IndexByte pass per stop value over successive 2KB windows.
+func (tr *Trie) skipRootIndex(input []byte, i int) int {
+	const window = 2048
+	inputLen := len(input)
+	for i < inputLen {
+		end := min(i+window, inputLen)
+		w := input[i:end]
+		best := -1
+		for _, c := range tr.skipBytes {
+			if j := bytes.IndexByte(w, c); j >= 0 {
+				if best < 0 || j < best {
+					best = j
+				}
+				w = w[:j+1] // later values only matter if earlier
+			}
+		}
+		if best >= 0 {
+			return i + best
+		}
+		i = end
+	}
+	return inputLen
 }
 
 // Walk calls this function on any match, giving the end position, length of the matched bytes,
