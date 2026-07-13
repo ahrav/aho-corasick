@@ -266,6 +266,55 @@ func TestDecodeWithMaxStatesEnforcesCallerLimit(t *testing.T) {
 	}
 }
 
+// TestDecodeClassTableRespectsMaxStatesBudget checks that the derived
+// byte-class-compressed table cannot push decode memory past the documented
+// maxStates budget of 1 KiB (one failTrans row) per state: with no headroom
+// between the actual state count and maxStates the table must be skipped,
+// and with ample headroom it must be built. The trie needs >2^15 states so
+// failTrans16 is nil (otherwise no class table is ever built) and a
+// multi-byte root fan-out so a scan path exists to consume it.
+func TestDecodeClassTableRespectsMaxStatesBudget(t *testing.T) {
+	const n = 1<<15 + 1 // one past the failTrans16 limit
+
+	failTrans := make([][256]uint32, n)
+	for s := range failTrans {
+		for b := range 256 {
+			failTrans[s][b] = rootState
+		}
+	}
+	// Two root-leaving bytes: rootStopBytes stays empty (multi-stop), so
+	// the class-table scan paths are reachable and classTableUsable holds.
+	failTrans[rootState]['a'] = 2
+	failTrans[rootState]['b'] = 3
+
+	dict := make([]uint32, n)
+	dictLink := make([]uint32, n)
+	pattern := make([]uint32, n)
+
+	// maxStates == state count: zero headroom, the class table must not
+	// be built on top of the failTrans budget.
+	tight, err := DecodeWithMaxStates(encodeRaw(t, dict, failTrans, dictLink, pattern), n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tight.failTrans16 != nil {
+		t.Fatalf("failTrans16 built for %d states, want nil above the 2^15 limit", n)
+	}
+	if tight.failTransC != nil {
+		t.Fatal("class table built with zero maxStates headroom, want skipped")
+	}
+
+	// Double the budget: the ~16 B/state class table fits easily and
+	// must be built for scan parity with builder-produced tries.
+	roomy, err := DecodeWithMaxStates(encodeRaw(t, dict, failTrans, dictLink, pattern), 2*n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roomy.failTransC == nil {
+		t.Fatal("class table skipped despite ample maxStates headroom, want built")
+	}
+}
+
 // TestDecodeTruncatedBeforeFailTrans exercises the incremental failTrans path:
 // a stream that declares many states (within the limit) but is truncated after
 // the dict rows must return an error, never panic, without reserving the full
