@@ -115,6 +115,96 @@ func TestChainHeavyMidChainWindows(t *testing.T) {
 	}
 }
 
+// buildInternalStopPatterns returns npat patterns of length plen whose
+// stop byte 'q' appears at offset 0 and again at plen/2, with an all-'z'
+// tail: a mid-window sample usually lands after an internal stop byte,
+// which must not derail the occupancy estimate.
+func buildInternalStopPatterns(plen, npat int) []string {
+	rng := rand.New(rand.NewSource(7))
+	pats := make([]string, npat)
+	for i := range pats {
+		b := make([]byte, plen)
+		b[0] = 'q'
+		for j := 1; j < plen/2; j++ {
+			b[j] = byte('a' + rng.Intn(16))
+			if b[j] == 'q' {
+				b[j] = 'r'
+			}
+		}
+		b[plen/2] = 'q'
+		for j := plen/2 + 1; j < plen; j++ {
+			b[j] = 'z'
+		}
+		pats[i] = string(b)
+	}
+	return pats
+}
+
+// TestChainHeavyExactStateRecovery pins the warm-up replay: the sample
+// walk must hold the real scan's state at every counted byte, so the
+// verdict cannot be derailed by where a window happens to land. Three
+// window placements that defeated the previous window-local heuristics:
+//
+//   - internal stop bytes: a window starting after a pattern's internal
+//     'q' must not re-enter the automaton at the wrong prefix and charge
+//     the rest of the occurrence as skips;
+//   - patterns wider than the 1KB window: a window wholly inside an
+//     excursion has no stop byte at all and must still count as in-chain
+//     evidence;
+//   - both fully in-chain shapes must pass at every sampling phase.
+func TestChainHeavyExactStateRecovery(t *testing.T) {
+	cases := []struct {
+		name string
+		pats []string
+	}{
+		{"internal-stop-plen1024", buildInternalStopPatterns(1024, 30)},
+		{"wider-than-window-plen2048", buildLongPatterns(2048, 15)},
+	}
+	for _, tc := range cases {
+		tr := buildStopByte16Trie(t, tc.pats)
+		full := concat(tc.pats, 68000)
+		for ph := 0; ph < 32; ph++ {
+			in := full[ph*63:]
+			in = in[:64000]
+			if !(len(in) >= dualThreshold && int(tr.maxLen)*4 < len(in)/2) {
+				t.Fatalf("%s: dispatch guard fails, bad test setup", tc.name)
+			}
+			if !tr.chainHeavy(in) {
+				t.Errorf("%s phase=%d: chainHeavy=false on a fully in-chain input", tc.name, ph)
+			}
+		}
+	}
+}
+
+// TestChainHeavyLargeMaxLenFillerInput pins the false-positive side of
+// the warm-up replay: with kilobyte-scale maxLen, real root-skip gaps
+// inside the windows must still be charged (the previous
+// ambiguous-prefix exclusion hid up to maxLen-1 leading skip bytes per
+// window and misrouted ~1/3-occupancy inputs to the dual scan on most
+// phases). A phase or two can still land all three windows inside
+// pattern bodies - that is sampling variance, not systematic bias - so
+// the test bounds the accept rate well below the biased behavior.
+func TestChainHeavyLargeMaxLenFillerInput(t *testing.T) {
+	pats := buildLongPatterns(1024, 30)
+	tr := buildStopByte16Trie(t, pats)
+	var sb []byte
+	for i := 0; len(sb) < 132<<10; i++ {
+		sb = append(sb, pats[i%len(pats)]...)
+		sb = append(sb, bytesFill(2048, 'x')...)
+	}
+	trues := 0
+	for ph := 0; ph < 32; ph++ {
+		in := sb[ph*96:]
+		in = in[:128<<10]
+		if tr.chainHeavy(in) {
+			trues++
+		}
+	}
+	if trues > 8 {
+		t.Errorf("chainHeavy accepted %d/32 phases of a ~1/3-occupancy input; want a small minority (sampling variance only)", trues)
+	}
+}
+
 // TestDifferentialLongPatternDual cross-checks Match against the naive
 // reference on the chain-heavy input that chainHeavy routes to the
 // dual-cursor scan, so the rescued dispatch path stays correct end to end.
