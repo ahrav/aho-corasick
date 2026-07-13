@@ -349,3 +349,23 @@ func BenchmarkLabSkip2(b *testing.B) {
 	b.Run("nomatch-100k", func(b *testing.B) { benchMatch(b, tr, nomatch) })
 	b.Run("ibsen-100k", func(b *testing.B) { benchMatch(b, tr, ibsen[:100000]) })
 }
+
+// Large no-match inputs: pure root skipping at sizes where the parallel
+// dispatcher engages. The single-stop skip is one vectorized IndexByte
+// pass at memory bandwidth — worker goroutines cannot beat it — while
+// the table skip is slower and may profit from splitting. Pins the
+// worker-cap policy for skip-dominated inputs.
+func BenchmarkLabNoMatchBig(b *testing.B) {
+	patterns, _ := labLoad(b)
+	rng := rand.New(rand.NewSource(11))
+	input := make([]byte, 8<<20)
+	for i := range input {
+		input[i] = byte('0' + rng.Intn(10))
+	}
+	trSingle := NewTrieBuilder().AddStrings(patterns[:10000]).Build()
+	trMulti := NewTrieBuilder().AddStrings(stride10k(patterns)).Build()
+	for _, size := range []int{1 << 20, 8 << 20} {
+		b.Run(fmt.Sprintf("single-%dm", size>>20), func(b *testing.B) { benchMatch(b, trSingle, input[:size]) })
+		b.Run(fmt.Sprintf("multi-%dm", size>>20), func(b *testing.B) { benchMatch(b, trMulti, input[:size]) })
+	}
+}
