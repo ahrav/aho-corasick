@@ -294,8 +294,9 @@ func (tr *Trie) buildClassTable(live *[256]bool) {
 	shift := uint32(bits.TrailingZeros(uint(stride)))
 
 	// Premultiplied offsets must fit 31 bits with the flag in bit 0.
-	// (Unreachable below the classStrideMax gate with 2^31/1024 states,
-	// but keep the invariant explicit.)
+	// (Unreachable below the classStrideMax gate — with classStrideMax=128
+	// (shift <= 7) this would require >= 2^24 states — but keep the
+	// invariant explicit.)
 	if uint64(len(tr.failTrans))<<shift >= 1<<31 {
 		return
 	}
