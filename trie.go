@@ -574,7 +574,7 @@ func (tr *Trie) chainWalk(w []byte, skips, counted int) (int, int, bool) {
 		return skips, counted, true
 	}
 	counted += len(w) - j
-	s := uint32(rootState)
+	s := rootState
 	for i := j; i < len(w); i++ {
 		if s == rootState && w[i] != c {
 			k := bytes.IndexByte(w[i:], c)

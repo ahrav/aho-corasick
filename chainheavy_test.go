@@ -129,6 +129,9 @@ func TestDifferentialLongPatternDual(t *testing.T) {
 	if len(in) >= 2*parallelChunk {
 		t.Fatal("test setup: input must stay below the parallel dispatch threshold")
 	}
+	if looksDense(in, tr.rootStopBytes[0]) {
+		t.Fatal("test setup: input must stay below the dense dispatch threshold")
+	}
 	if !tr.chainHeavy(in) {
 		t.Fatal("test setup: input must take the chain-heavy dual path")
 	}
