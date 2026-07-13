@@ -202,11 +202,49 @@ func (tr *Trie) buildFailTrans16() {
 	}
 }
 
+// classTableUsable reports whether any scan path can consume failTransC.
+// Only the multi-stop table loops (matchDualTableC, scanRangeTableC) read
+// it: single-stop tries always take matchStopByte, and tries small enough
+// for failTrans16 use its half-width loops, so building the table for
+// either would retain up to classStrideMax*4 bytes per state that nothing
+// loads. Valid only after buildRootSkip and buildFailTrans16 have run.
+func (tr *Trie) classTableUsable() bool {
+	return tr.failTrans16 == nil && len(tr.rootStopBytes) != 1
+}
+
+// classStrideMax is the widest failTransC row buildClassTable accepts, in
+// entries. At half the full 256-entry row the compressed table stops
+// fitting meaningfully better in cache, so wider strides aren't built.
+const classStrideMax = 128
+
+// classTableStride returns the failTransC row stride a live set implies —
+// the class count (the shared dead class plus one class per live byte)
+// rounded up to a power of two — or 0 when the row would exceed
+// classStrideMax and buildClassTable declines to build. Callers can price
+// the table (len(failTrans) * stride * 4 bytes) before building it.
+func classTableStride(live *[256]bool) int {
+	numClasses := 1
+	for b := range 256 {
+		if live[b] {
+			numClasses++
+		}
+	}
+	stride := 1
+	for stride < numClasses {
+		stride <<= 1
+	}
+	if stride > classStrideMax {
+		return 0
+	}
+	return stride
+}
+
 // buildClassTable builds the byte-class-compressed transition table for
-// automata that cannot use failTrans16. Only worthwhile when the class
-// row is at most half the full row: beyond that the compressed table
-// stops fitting meaningfully better in cache. Idempotent; must run after
-// addOutputFlags (flags ride along in the copied entries).
+// automata that cannot use failTrans16, when a scan path exists to read
+// it (see classTableUsable) and the class row is at most half the full
+// row (see classTableStride). Idempotent; must run after addOutputFlags
+// (flags ride along in the copied entries) and after buildRootSkip and
+// buildFailTrans16 (classTableUsable reads their outputs).
 //
 // A byte is live iff some state moves on it — equivalently, iff it
 // appears in some pattern; every dead byte sends every state to the
@@ -214,7 +252,11 @@ func (tr *Trie) buildFailTrans16() {
 // already knows; the decoder derives it with derivedLiveBytes.
 func (tr *Trie) buildClassTable(live *[256]bool) {
 	tr.failTransC = nil
-	if tr.failTrans16 != nil {
+	if !tr.classTableUsable() {
+		return
+	}
+	stride := classTableStride(live)
+	if stride == 0 {
 		return
 	}
 
@@ -228,16 +270,7 @@ func (tr *Trie) buildClassTable(live *[256]bool) {
 		}
 	}
 
-	stride := 1
-	shift := uint32(0)
-	for stride < numClasses {
-		stride <<= 1
-		shift++
-	}
-	if stride > 128 {
-		return
-	}
-
+	shift := uint32(bits.TrailingZeros(uint(stride)))
 	tr.classShift = shift
 	// Only live columns need copying: dead columns are all class 0,
 	// pre-set to the root. Iterating the live list keeps this pass
@@ -263,7 +296,7 @@ func (tr *Trie) buildClassTable(live *[256]bool) {
 // (for decoded tries, where the builder's pattern knowledge is gone): a
 // byte is live iff any state's entry on it differs from a plain root
 // transition. Costs a full table scan; call only when buildClassTable
-// will actually build (failTrans16 == nil).
+// will actually build (classTableUsable returns true).
 func (tr *Trie) derivedLiveBytes() *[256]bool {
 	var live [256]bool
 	for s := range tr.failTrans {

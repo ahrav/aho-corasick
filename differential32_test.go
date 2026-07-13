@@ -77,10 +77,16 @@ func TestDifferential32BitPaths(t *testing.T) {
 			trie.setStopEntry()
 			if classed {
 				// Also exercise the byte-class-compressed loops
-				// (matchTableC, matchDualTableC, scanRangeTableC).
+				// (matchDualTableC, scanRangeTableC). Single-stop
+				// tries take matchStopByte and never read the class
+				// table, so buildClassTable must refuse to build one
+				// for them; there is no classed path to exercise.
 				trie.buildClassTable(trie.derivedLiveBytes())
+				if wantTable := len(trie.rootStopBytes) != 1; (trie.failTransC != nil) != wantTable {
+					t.Fatalf("%s: failTransC != nil is %v, want %v", c.name, !wantTable, wantTable)
+				}
 				if trie.failTransC == nil {
-					t.Fatalf("%s: expected class table for small alphabet", c.name)
+					continue
 				}
 			} else {
 				trie.failTransC = nil
