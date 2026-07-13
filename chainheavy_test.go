@@ -193,9 +193,9 @@ func TestDualWorthwhileSampleFloor(t *testing.T) {
 		t.Error("dualWorthwhile=true below the sampling floor for a sparse input")
 	}
 	// The same shape above the floor is rescued.
-	big := concat(pats, 12<<10)
+	big := concat(pats, 20<<10)
 	if len(big) < dualChainFloor*(int(tr.maxLen)+1024) {
-		t.Fatal("test setup: 12KB input must sit above the sampling floor")
+		t.Fatal("test setup: 20KB input must sit above the sampling floor")
 	}
 	if !tr.dualWorthwhile(big) {
 		t.Error("dualWorthwhile=false above the sampling floor for a long-chain input")
@@ -236,6 +236,48 @@ func TestChainSampleExactStateRecovery(t *testing.T) {
 				t.Errorf("%s phase=%d: dualWorthwhile=false on a fully in-chain input", tc.name, ph)
 			}
 		}
+	}
+}
+
+// TestDualWorthwhileUnrepresentativeWindows pins the per-window voting:
+// a pocket of unrepresentative input must not decide the dispatch for
+// the rest.
+func TestDualWorthwhileUnrepresentativeWindows(t *testing.T) {
+	// A 2KB false-start prefix (would exhaust a shared sampling budget
+	// with dozens of depth-1 excursions) ahead of a long-chain body:
+	// the windows past the prefix must outvote it.
+	pats := buildLongPatterns(64, 100)
+	for i, p := range pats {
+		pats[i] = "qa" + p[2:]
+	}
+	tr := buildStopByte16Trie(t, pats)
+	var in []byte
+	for len(in) < 2048 {
+		in = append(in, 'q')
+		in = append(in, bytesFill(8, 'x')...)
+	}
+	in = in[:2048]
+	in = append(in, concat(pats, 62<<10)...)
+	if !tr.dualWorthwhile(in) {
+		t.Error("dualWorthwhile=false: a noisy 2KB prefix outvoted 62KB of long chains")
+	}
+
+	// Filler pockets planted exactly on looksDense's head/mid/tail
+	// windows, long chains everywhere else: the chain windows sit at
+	// different offsets, so the two signals must not share blind spots.
+	pats2 := buildLongPatterns(32, 200)
+	tr2 := buildStopByte16Trie(t, pats2)
+	n := 12 << 10
+	body := concat(pats2, n)
+	fill := bytesFill(1200, 'x')
+	copy(body[0:], fill)
+	copy(body[n/2-100:], fill)
+	copy(body[n-1200:], fill)
+	if looksDense(body, tr2.rootStopBytes[0]) {
+		t.Fatal("test setup: filler must blind the density windows")
+	}
+	if !tr2.dualWorthwhile(body) {
+		t.Error("dualWorthwhile=false: chain windows share looksDense's blind spots")
 	}
 }
 
