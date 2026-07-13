@@ -109,16 +109,14 @@ func (b *matchBuf) reset() {
 	b.ptrs = b.ptrs[:0]
 }
 
-// materialize builds the arena of Match values and the pointer slice
-// from the recorded raw pairs.
-func (b *matchBuf) materialize(input []byte) {
-	n := len(b.raw) / 2
+// sizeArena prepares arena and ptrs for exactly n Match values, keeping
+// capacity and clearing any stale tail (stale Match values would keep
+// the previous input alive via their match slices while the buffer sits
+// idle in the pool).
+func (b *matchBuf) sizeArena(n int) {
 	if cap(b.arena) < n {
 		b.arena = make([]Match, n)
 	} else {
-		// Clear the dropped tail before reslicing down: stale Match values
-		// in arena[n:] would otherwise keep the previous input alive via
-		// their match slices while the buffer sits idle in the pool.
 		old := b.arena
 		b.arena = b.arena[:n]
 		if len(old) > n {
@@ -130,18 +128,33 @@ func (b *matchBuf) materialize(input []byte) {
 	} else {
 		b.ptrs = b.ptrs[:n]
 	}
-	for k := 0; k < n; k++ {
-		end := b.raw[2*k]
-		dp := b.raw[2*k+1]
+}
+
+// materializeSegment expands raw pairs into b.arena/b.ptrs starting at
+// index off, returning the index after the last entry written. The
+// arena must already be sized; segments written by different goroutines
+// are disjoint, so parallel calls are safe.
+func (b *matchBuf) materializeSegment(input []byte, raw []uint64, off int) int {
+	for k := 0; k < len(raw)/2; k++ {
+		end := raw[2*k]
+		dp := raw[2*k+1]
 		ln := uint32(dp)
 		pos := uint32(end) - ln + 1
-		m := &b.arena[k]
+		m := &b.arena[off+k]
 		m.pos = pos
 		m.pattern = uint32(dp >> 32)
 		m.match = input[pos : uint32(end)+1]
 		m.buf = nil
-		b.ptrs[k] = m
+		b.ptrs[off+k] = m
 	}
+	return off + len(raw)/2
+}
+
+// materialize builds the arena of Match values and the pointer slice
+// from the recorded raw pairs.
+func (b *matchBuf) materialize(input []byte) {
+	b.sizeArena(len(b.raw) / 2)
+	b.materializeSegment(input, b.raw, 0)
 }
 
 func newBufPool() sync.Pool {
@@ -1612,25 +1625,59 @@ func (tr *Trie) matchParallel(input []byte, p int) []*Match {
 		main.reset()
 		tr.matchSeq(input[:min(chunk, len(input))], main)
 		wg.Wait()
+
+		// Materialize straight from the per-worker buffers instead of
+		// first copying every raw pair into one slice: the copy and the
+		// single-threaded expansion were the serial tail that capped
+		// the parallel speedup.
+		total := len(main.raw) / 2
 		for k := 1; k < p; k++ {
-			wb := bufs[k]
-			main.raw = append(main.raw, wb.raw...)
-			wb.raw = wb.raw[:0]
-			// Worker buffers never materialize, so an arena filled in a
-			// previous life of this pooled buffer may still hold
-			// Match.match slices into an old input; clear it so the
-			// buffer doesn't retain that input while idle in the pool.
-			// (materialize keeps the arena tail beyond len zeroed, so
-			// clearing len and truncating leaves no stale entries.)
-			clear(wb.arena)
-			wb.arena = wb.arena[:0]
-			tr.bufPool.Put(wb)
+			total += len(bufs[k].raw) / 2
 		}
-	} else {
-		main = tr.bufPool.Get().(*matchBuf)
-		main.reset()
-		tr.matchSeq(input, main)
+		if total == 0 {
+			for k := 1; k < p; k++ {
+				tr.putWorkerBuf(bufs[k])
+			}
+			tr.bufPool.Put(main)
+			return nil
+		}
+		main.sizeArena(total)
+
+		// Small results are not worth another round of goroutine
+		// wakeups; expand serially but still without the merge copy.
+		const parallelMaterialize = 4096
+		if total >= parallelMaterialize {
+			var mg sync.WaitGroup
+			off := 0
+			for k := 0; k < p; k++ {
+				raw := main.raw
+				if k > 0 {
+					raw = bufs[k].raw
+				}
+				mg.Add(1)
+				go func(raw []uint64, off int) {
+					defer mg.Done()
+					main.materializeSegment(input, raw, off)
+				}(raw, off)
+				off += len(raw) / 2
+			}
+			mg.Wait()
+		} else {
+			off := main.materializeSegment(input, main.raw, 0)
+			for k := 1; k < p; k++ {
+				off = main.materializeSegment(input, bufs[k].raw, off)
+			}
+		}
+		for k := 1; k < p; k++ {
+			tr.putWorkerBuf(bufs[k])
+		}
+		main.ptrs[0].buf = main
+		return main.ptrs
 	}
+
+	main = tr.bufPool.Get().(*matchBuf)
+	main.reset()
+	tr.matchSeq(input, main)
 
 	if len(main.raw) == 0 {
 		tr.bufPool.Put(main)
@@ -1639,6 +1686,19 @@ func (tr *Trie) matchParallel(input []byte, p int) []*Match {
 	main.materialize(input)
 	main.ptrs[0].buf = main
 	return main.ptrs
+}
+
+// putWorkerBuf returns a worker's scratch buffer to the pool. Worker
+// buffers never materialize, so an arena filled in a previous life of
+// this pooled buffer may still hold Match.match slices into an old
+// input; clear it so the buffer doesn't retain that input while idle in
+// the pool. (sizeArena keeps the arena tail beyond len zeroed, so
+// clearing len and truncating leaves no stale entries.)
+func (tr *Trie) putWorkerBuf(wb *matchBuf) {
+	wb.raw = wb.raw[:0]
+	clear(wb.arena)
+	wb.arena = wb.arena[:0]
+	tr.bufPool.Put(wb)
 }
 
 // matchStopByte is the Match specialization of walkStopByte: matches are
