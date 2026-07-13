@@ -485,59 +485,99 @@ func looksDense(input []byte, c byte) bool {
 }
 
 // dualChainSkipMax is the maximum number of root-skippable bytes, out of
-// the 3KB chainHeavy samples, for the input to still count as
-// chain-heavy (in-chain occupancy >= 7/8). Calibrated on the same
-// workloads as dualDenseThreshold plus concatenated long patterns:
-// word-plus-filler mixtures that favor the single cursor sample at
-// <= 0.79 occupancy, concatenated dictionary words at >= 0.91, and
-// concatenated 32-100 byte patterns (~1-3% stop-byte density, dual wins
-// ~1.8-2x, measured on Neoverse) at >= 0.98. Natural text samples at
-// ~0.10 and exhausts the budget within the first window.
+// the up-to-3KB chainHeavy sample, for the input to still count as
+// chain-heavy (in-chain occupancy >= 7/8 of the counted bytes).
+// Calibrated on the same workloads as dualDenseThreshold plus
+// concatenated long patterns: word-plus-filler mixtures that favor the
+// single cursor sample at <= 0.79 occupancy, concatenated dictionary
+// words at >= 0.91, and concatenated 32-1024 byte patterns (~0.1-3%
+// stop-byte density, dual wins ~1.8-2x, measured on Neoverse) at
+// >= 0.98. Natural text samples at ~0.10 and exhausts the budget within
+// the first window.
 const dualChainSkipMax = 384
+
+// dualChainMinSample is the minimum number of counted (non-excluded)
+// sample bytes for a chain-heavy verdict. Windows may exclude up to
+// maxLen-1 ambiguous leading bytes each; if nearly everything is
+// excluded there is no evidence either way, and the dispatch keeps the
+// single-cursor default.
+const dualChainMinSample = 256
 
 // chainHeavy samples three 1KB windows of input (head, middle, tail) by
 // walking the automaton the same way the scan loop does, and reports
-// whether at most dualChainSkipMax of the sampled bytes were root
-// self-loop skips. It exits early once the skip budget is spent, so
-// skip-friendly inputs (the ones that should stay on the single-cursor
-// path) pay a few IndexByte hops; the full 3KB transition walk is only
-// paid on chain-heavy inputs, where routing to the dual scan recovers
-// orders of magnitude more than the sample costs. Inputs of <= 4KB skip
-// the check: at that size a 3KB walk cancels the dual win.
+// whether root self-loop skips are at most 1/8 of the counted sample
+// bytes. It exits early once skips exceed dualChainSkipMax (the ratio
+// can then no longer pass), so skip-friendly inputs (the ones that
+// should stay on the single-cursor path) pay a few IndexByte hops; the
+// full 3KB transition walk is only paid on chain-heavy inputs, where
+// routing to the dual scan recovers orders of magnitude more than the
+// sample costs. Inputs of <= 4KB skip the check: at that size a 3KB
+// walk cancels the dual win.
 func (tr *Trie) chainHeavy(input []byte) bool {
 	n := len(input)
 	if n <= 4096 {
 		return false
 	}
 	mid := n / 2
-	budget := dualChainSkipMax
+	skips, counted := 0, 0
 	for _, w := range [3][]byte{input[:1024], input[mid : mid+1024], input[n-1024:]} {
 		var ok bool
-		budget, ok = tr.chainWalk(w, budget)
+		skips, counted, ok = tr.chainWalk(w, skips, counted)
 		if !ok {
 			return false
 		}
 	}
-	return true
+	return counted >= dualChainMinSample && skips*8 <= counted
 }
 
-// chainWalk walks one sample window, decrementing budget for every byte
-// covered by a root self-loop skip. It returns the remaining budget and
-// false as soon as the budget goes negative.
-func (tr *Trie) chainWalk(w []byte, budget int) (int, bool) {
+// chainWalk walks one sample window, accumulating root-skippable bytes
+// into skips and evidence bytes (skips plus transition steps) into
+// counted. It returns false as soon as skips exceeds dualChainSkipMax.
+//
+// A window may start mid-excursion, and the walk cannot know the real
+// scan's state there, so the leading bytes are handled specially: any
+// non-root state's string starts with the stop byte, so a position whose
+// trailing maxLen bytes contain no stop byte is provably at root in the
+// real scan. Bytes before the window's first stop byte are therefore
+// ambiguous for the first maxLen-1 positions - excluded from both
+// counts - and provable skips after that. Without the exclusion, a
+// window landing inside a long pattern would charge the in-chain
+// remainder of that occurrence as skips and veto the exact inputs this
+// gate exists to rescue (kilobyte-scale patterns sampled at unaligned
+// offsets). The head window gets the same treatment: its pre-stop-byte
+// prefix is a real skip for the scan, but it is a one-off transient of
+// at most maxLen-1 bytes (< input/8 by the dispatch guard), and
+// charging it would let sample phase, not steady-state behavior, decide
+// the verdict.
+func (tr *Trie) chainWalk(w []byte, skips, counted int) (int, int, bool) {
 	c := tr.rootStopBytes[0]
+	j := bytes.IndexByte(w, c)
+	if j < 0 {
+		j = len(w)
+	}
+	if ambiguous := int(tr.maxLen) - 1; j > ambiguous {
+		skips += j - ambiguous
+		counted += j - ambiguous
+		if skips > dualChainSkipMax {
+			return 0, 0, false
+		}
+	}
+	if j == len(w) {
+		return skips, counted, true
+	}
+	counted += len(w) - j
 	s := uint32(rootState)
-	for i := 0; i < len(w); i++ {
+	for i := j; i < len(w); i++ {
 		if s == rootState && w[i] != c {
-			j := bytes.IndexByte(w[i:], c)
-			if j < 0 {
-				j = len(w) - i
+			k := bytes.IndexByte(w[i:], c)
+			if k < 0 {
+				k = len(w) - i
 			}
-			budget -= j
-			if budget < 0 {
-				return 0, false
+			skips += k
+			if skips > dualChainSkipMax {
+				return 0, 0, false
 			}
-			i += j
+			i += k
 			if i >= len(w) {
 				break
 			}
@@ -545,7 +585,7 @@ func (tr *Trie) chainWalk(w []byte, budget int) (int, bool) {
 		v := tr.failTrans16[int(s)<<8+int(w[i])]
 		s = uint32(v) &^ (1 << 15)
 	}
-	return budget, true
+	return skips, counted, true
 }
 
 // matchSeq scans input sequentially into buf.

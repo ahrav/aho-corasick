@@ -89,6 +89,32 @@ func TestChainHeavySkipFriendlyInput(t *testing.T) {
 	}
 }
 
+// TestChainHeavyMidChainWindows pins the ambiguous-prefix exclusion: the
+// middle and tail sample windows usually start inside an excursion, and
+// the walk (which restarts from the root) must not charge the in-chain
+// bytes before the window's first stop byte as root skips. Kilobyte-scale
+// patterns make that mis-charge fatal - one unaligned window start would
+// spend the whole skip budget - so the verdict must hold at every
+// sampling phase.
+func TestChainHeavyMidChainWindows(t *testing.T) {
+	for _, plen := range []int{256, 512, 1024} {
+		npat := min(30, ((1<<15)-64)/plen)
+		pats := buildLongPatterns(plen, npat)
+		tr := buildStopByte16Trie(t, pats)
+		full := concat(pats, 66000+plen)
+		for ph := 0; ph < 64; ph++ {
+			in := full[ph*plen/64:]
+			in = in[:66000]
+			if !(len(in) >= dualThreshold && int(tr.maxLen)*4 < len(in)/2) {
+				t.Fatalf("plen=%d: dispatch guard fails, bad test setup", plen)
+			}
+			if !tr.chainHeavy(in) {
+				t.Errorf("plen=%d phase=%d: chainHeavy=false; window phase must not decide the verdict", plen, ph)
+			}
+		}
+	}
+}
+
 // TestDifferentialLongPatternDual cross-checks Match against the naive
 // reference on the chain-heavy input that chainHeavy routes to the
 // dual-cursor scan, so the rescued dispatch path stays correct end to end.
