@@ -493,12 +493,23 @@ func TestXBenchExport(t *testing.T) {
 	}
 
 	// Sanity: Walk and Match must agree on the match set for one pair.
+	// Compare the full (start, length) multiset fingerprint, not just
+	// counts, so a Walk regression in positions or lengths fails here.
 	{
 		var cnt int64
-		tries["sorted10k"].Walk(ibsen[:100000], func(end, l, p uint32) bool { cnt++; return true })
+		var sum uint64
+		tries["sorted10k"].Walk(ibsen[:100000], func(end, l, _ uint32) bool {
+			cnt++
+			start := uint64(end - l + 1)
+			sum += splitmix64(start<<20 | uint64(l))
+			return true
+		})
 		ms := tries["sorted10k"].Match(ibsen[:100000])
-		if cnt != int64(len(ms)) {
-			t.Fatalf("Walk (%d) and Match (%d) disagree", cnt, len(ms))
+		matchCount, matchHash := matchSetHash(ms)
+		walkHash := fmt.Sprintf("%016x", sum)
+		if cnt != matchCount || walkHash != matchHash {
+			t.Fatalf("Walk (%d, %s) and Match (%d, %s) disagree",
+				cnt, walkHash, matchCount, matchHash)
 		}
 		tries["sorted10k"].ReleaseMatches(ms)
 	}

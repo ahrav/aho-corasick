@@ -24,6 +24,8 @@ The same algorithm was both faster and slower, depending on regime. The missing 
 
 Sample how often the input contains the root's sole stop byte. If the sample is dense enough, use two cursors. Otherwise, keep the single cursor's cheaper root skip.
 
+That was this commit's whole contract. The dispatch has since grown a second stage: today's code routes through `dualWorthwhile`, where the density sample is only the initial (and fallback) signal, and for sufficiently large inputs sampled mean excursion length can override it in either direction. The "Since this commit" section below describes the current contract; the mechanism walkthrough that follows is the original density-only gate this chapter teaches.
+
 At dinner: **first ask whether there are enough dependent loads to make overlapping them worthwhile.**
 
 ## New concept: memory-level parallelism
@@ -56,7 +58,7 @@ MLP helps only while the scan performs table transitions. During a root gap, Cha
 
 The true quantity is “how much time will this input spend following DFA transitions?” Computing that exactly would require running the scan—the work the dispatcher is trying to choose.
 
-Instead, `looksDense` counts occurrences of the sole root-leaving byte. This **proxy** is not the automaton state trace: a counted byte may occur while already away from the root. But it is cheap and correlates with how often root gaps end.
+Instead, `looksDense` counts occurrences of the sole root-leaving byte. This **proxy** is not the automaton state trace: a counted byte may occur while already away from the root. But it is cheap and correlates with how often root gaps end. (In today's code it is the first-stage signal inside `dualWorthwhile`; see "Since this commit.")
 
 For inputs up to 4,096 bytes, the helper counts the whole input. For larger inputs, it samples three 1,024-byte windows:
 
@@ -106,7 +108,7 @@ The gap between 9.6% and 10.9% supports a threshold near 10%. It is a measured b
 
 ## The mechanism: add one speed-only branch
 
-The density check is the last eligibility condition (`trie.go:481-500` at `566ec04`):
+The density check is the last eligibility condition (`trie.go:481-500` at `566ec04`; in today's code the final condition is `dualWorthwhile`, which starts from this same density check — see "Since this commit"):
 
 ```mermaid
 flowchart TB
@@ -160,7 +162,7 @@ One source discrepancy remains: `PR-CHAIN.md:27` summarizes the 4 KB text gain a
 
 ## Why it is safe
 
-This is the key dispatch invariant: **a misclassification can only cost speed; it cannot change output.** `looksDense` is read-only. It chooses between `matchStopByte16` and `matchDualStopByte16`, two implementations of the same automaton with the same ordered match stream.
+This is the key dispatch invariant: **a misclassification can only cost speed; it cannot change output.** The dispatch decision — `looksDense` at this commit, `dualWorthwhile` (density plus excursion voting) today — is read-only. It chooses between `matchStopByte16` and `matchDualStopByte16`, two implementations of the same automaton with the same ordered match stream.
 
 The arithmetic is bounds-safe: the full-count branch handles `n <= 4096`; the three-window branch therefore has valid head, middle, and tail slices. The sample does not mutate input or trie state.
 
@@ -168,11 +170,35 @@ The diff adds no sampler-specific test. Correctness is instead path-independent:
 
 The sampler can still guess poorly when head, middle, and tail do not represent the unsampled regions. That is acceptable because the fallback consequence is only choosing the slower correct loop.
 
+## Since this commit: excursion voting
+
+Density alone misjudges inputs whose stop bytes are frequent but whose
+excursions from the root are short (or the reverse). A later commit
+(`489d789`) replaced the bare `looksDense` call in `matchSeq` with
+`dualWorthwhile`, which layers a second, more direct sample on top:
+
+1. `looksDense` still runs first and its verdict is the default.
+2. If the input is large enough to amortize the cost
+   (`len(input) >= dualChainFloor*(maxLen+1024)`), `chainSample` walks
+   four 1 KB windows the same way the real scan would (each warmed up
+   from `maxLen` bytes before the window so it starts in the exact
+   automaton state the real scan holds there) and each window votes
+   long, short, or abstain on its local mean excursion length.
+3. A majority of decided windows **overrides** the density verdict in
+   either direction; ties and all-abstain samples fall back to density.
+
+The windows sit at the 1/8, 3/8, 5/8, and 7/8 points — deliberately
+offset from the head/middle/tail windows `looksDense` reads — so the two
+signals do not share blind spots. The safety story is unchanged: both
+stages are read-only, and a wrong verdict still only picks the slower of
+two correct loops.
+
 ## Recap
 
 - MLP overlaps two independent transition-load chains, but it helps only when the input actually performs enough transitions.
 - Three 1 KB samples estimate stop-byte density; measured break-evens place the Zen 4 threshold near 10%.
 - The dispatcher restores sparse-text speed and keeps dense wins, while misclassification remains speed-only.
+- Today's `dualWorthwhile` keeps density as the first signal and lets sampled mean excursion length outvote it on large inputs.
 
 ## Check yourself
 

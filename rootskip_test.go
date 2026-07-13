@@ -105,9 +105,10 @@ func TestRootSkipLongGapIndexByte(t *testing.T) {
 	checkAgainstNaive(t, patterns, bytesFill(10000, ' '))
 }
 
-// TestRootSkipMultiStopByteTable exercises walkTable: two or more distinct
-// first bytes route through the rootStop OR-table skip instead of the SWAR
-// path. Sweeps density-like patterns and alignments.
+// TestRootSkipMultiStopByteTable exercises the multi-stop table walk
+// (walkTable16 at this fixture's scale): two or more distinct first bytes
+// route through the rootStop OR-table skip instead of the SWAR path.
+// Sweeps density-like patterns and alignments.
 func TestRootSkipMultiStopByteTable(t *testing.T) {
 	patterns := []string{"apple", "banana", "cherry", "a", "b", "c"} // first bytes a,b,c => table
 	inputs := [][]byte{

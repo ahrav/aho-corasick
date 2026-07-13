@@ -6,10 +6,11 @@ import (
 )
 
 // TestDPEquivalence checks the DP-built tables against the reference
-// definitions for every (state, byte): failTrans states must equal the
-// fail-chain walk (computeFailTransition), output flags must equal the
-// target's dict/dictLink emit condition, and failTrans16 must mirror
-// failTrans.
+// definitions: per state, dict/pattern/dictLink must equal the builder
+// state's values (dictLink translated through the BFS numbering); per
+// (state, byte), failTrans states must equal the fail-chain walk
+// (computeFailTransition), output flags must equal the target's
+// dict/dictLink emit condition, and failTrans16 must mirror failTrans.
 func TestDPEquivalence(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	for trial := 0; trial < 50; trial++ {
@@ -47,6 +48,19 @@ func TestDPEquivalence(t *testing.T) {
 		for i, sid := range order {
 			if i == 0 {
 				continue
+			}
+			s := &tb.states[sid]
+			if trie.dict[i] != s.dict || trie.pattern[i] != s.pattern {
+				t.Fatalf("trial %d state %d: dict/pattern got (%d,%d) want (%d,%d)",
+					trial, i, trie.dict[i], trie.pattern[i], s.dict, s.pattern)
+			}
+			wantDictLink := nilState
+			if s.dictLink != 0 {
+				wantDictLink = newID[s.dictLink]
+			}
+			if trie.dictLink[i] != wantDictLink {
+				t.Fatalf("trial %d state %d: dictLink got %d want %d",
+					trial, i, trie.dictLink[i], wantDictLink)
 			}
 			for b := 0; b < 256; b++ {
 				v := trie.failTrans[i][b]
@@ -105,13 +119,15 @@ func TestFailTrans16Cutoff(t *testing.T) {
 	}
 
 	t.Run("at limit", func(t *testing.T) {
-		tr := buildBoundaryTrie(t, 1<<15)
+		tr := buildBoundaryTrie(t, failTrans16MaxStates)
 		if tr.failTrans16 == nil {
-			t.Fatalf("failTrans16 nil at exactly 2^15 states, want built")
+			t.Fatalf("failTrans16 nil at exactly failTrans16MaxStates states, want built")
 		}
 		// The highest BFS id is a pattern-terminal (emitting) state:
 		// its packed entry must carry all 15 state bits and the flag.
-		maxState := uint32(1<<15 - 1)
+		// If failTrans16MaxStates is ever raised past the 15-bit packing
+		// capacity, this catches the truncation at the new boundary.
+		maxState := uint32(failTrans16MaxStates - 1)
 		var found bool
 		for s := 0; s < len(tr.failTrans) && !found; s++ {
 			for b := 0; b < 256; b++ {
@@ -139,9 +155,9 @@ func TestFailTrans16Cutoff(t *testing.T) {
 	})
 
 	t.Run("one past limit", func(t *testing.T) {
-		tr := buildBoundaryTrie(t, 1<<15+1)
+		tr := buildBoundaryTrie(t, failTrans16MaxStates+1)
 		if tr.failTrans16 != nil {
-			t.Fatalf("failTrans16 built for %d states, want nil above the 2^15 limit", 1<<15+1)
+			t.Fatalf("failTrans16 built for %d states, want nil above the limit", failTrans16MaxStates+1)
 		}
 	})
 }

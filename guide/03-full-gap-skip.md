@@ -123,17 +123,19 @@ func nextStop(input []byte, i int, c byte, cc uint64) int {
 }
 ```
 
-Both dual lanes now call it in the same place (`trie.go:596-635` at `3d8c3a8`):
+Both dual lanes now call it in the same place (`trie.go:596-635` at `3d8c3a8`; a
+later commit, `68e77f7`, bounds lane A's search to its own half — shown here):
 
 ```go
-// Lane A
+// Lane A — bounded to input[:mid]: bytes at or past mid are lane B's
+// alone, so a gap crossing mid must not scan lane B's half twice.
 if sA == rootState && input[iA] != c {
-    iA = nextStop(input, iA, c, cc)
+    iA = nextStop(input[:mid], iA, c, cc)
 } else {
     ... // one DFA transition and possible output
 }
 
-// Lane B
+// Lane B — runs to the end of the input, no bound needed.
 if sB == rootState && input[iB] != c {
     iB = nextStop(input, iB, c, cc)
 } else {
@@ -160,7 +162,7 @@ There is a documentation mismatch. `PR-CHAIN.md:26` summarizes text gains as −
 
 `nextStop` runs only when the lane is at the root and `input[i] != c`. This trie has exactly one root-leaving byte, `c`. Therefore every byte skipped before the next `c` is a root self-loop. The root cannot emit, so skipping those bytes cannot hide a match.
 
-Lane A may search beyond its midpoint. That is safe because `nextStop` only observes bytes; it never executes a transition. Every byte before the returned `c` is a self-loop, and if `c` lies beyond the boundary, lane A exits before processing it. Lane B owns outputs ending at or after the midpoint, and the existing overlap rule still applies. If one lane advances much farther than the other, `scanRange16` finishes the remainder.
+Lane A's gap search is bounded to `input[:mid]` (since `68e77f7`). The bound is a cost decision, not a correctness one: `nextStop` only observes bytes, never executes a transition, so an unbounded search would still be safe — every byte before the returned `c` is a self-loop, and if `c` lay beyond the boundary lane A would exit before processing it. But a root gap carries no automaton state across the midpoint, so bytes at or past `mid` belong to lane B alone; letting lane A's search run past `mid` would scan lane B's half a second time for no benefit. Do not remove the bound expecting a win — it exists to avoid that duplicated work. Lane B owns outputs ending at or after the midpoint, and the existing overlap rule still applies. If one lane advances much farther than the other, `scanRange16` finishes the remainder.
 
 The diff adds no test file, but focused coverage already compares dual output byte-for-byte with the sequential 16-bit scan. `TestDualStopByte16LaneMergeBoundary` plants matches around the midpoint, and `TestDualStopByte16UnevenLanes` makes one half dense and the other sparse (`dualscan_test.go:136-208` at `3d8c3a8`). Differential and fuzz coverage also drive the dual path. `PR-CHAIN.md:3-8` says this chain position passes `go test ./...`; the full chain passes race, `checkptr`, and fuzz gates.
 

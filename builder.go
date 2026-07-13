@@ -214,7 +214,7 @@ func (tb *TrieBuilder) Build() *Trie {
 	// Set up object pool for match buffer reuse.
 	trie.bufPool = newBufPool()
 
-	half := numStates <= 1<<15
+	half := numStates <= failTrans16MaxStates
 	if half {
 		trie.failTrans16 = make([]uint16, numStates*256)
 	}
@@ -268,7 +268,7 @@ func (tb *TrieBuilder) Build() *Trie {
 			}
 			row[ts.value] = v
 			if half {
-				row16[ts.value] = uint16(v&stateMask) | uint16(v>>16)&(1<<15)
+				row16[ts.value] = packState16(v)
 			}
 		}
 	}

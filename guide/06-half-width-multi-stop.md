@@ -209,7 +209,7 @@ This commit changes representation and dispatch, not automaton semantics:
 
 `TestFailTrans16Gate` changes its contract: a small multi-stop trie must now have the compact table, and its sample input must still return three matches (`trie_test.go:274-296`). `FuzzMatch` compares `Match`, `Walk`, and `MatchFirst` exactly against the naive matcher. `FuzzEncodeDecode` checks the rebuilt derived tables after a round trip. The chain index reports `go test ./...` at every stack position plus race, checkptr, and fuzz gates for the full chain.
 
-There are stale comments at this commit. `Trie.failTrans16` still says the table is built only for a single-stop matcher (`trie.go:53-59`). `BenchmarkLabMultiStop`, `FuzzMatch`, and `TestRootSkipMultiStopByteTable` still name the old 32-bit path even though these small multi-stop fixtures now route through `matchTable16` or `walkTable16`. The updated builder gate, dispatch code, and `TestFailTrans16Gate` are authoritative.
+There are stale comments at this commit. `Trie.failTrans16` still says the table is built only for a single-stop matcher (`trie.go:53-59`). `BenchmarkLabMultiStop`, `FuzzMatch`, and `TestRootSkipMultiStopByteTable` still name the old 32-bit path even though these small multi-stop fixtures now route through `matchTable16` or `walkTable16`. The updated builder gate, dispatch code, and `TestFailTrans16Gate` are authoritative. (The field comment and the `FuzzMatch`/`TestRootSkipMultiStopByteTable` comments have since been corrected to name the 16-bit paths; `BenchmarkLabMultiStop` was reworded when the small multi-stop benchmark split out.)
 
 ## Recap
 
