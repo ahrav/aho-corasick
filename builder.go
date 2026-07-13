@@ -4,87 +4,73 @@ import (
 	"bufio"
 	"encoding/hex"
 	"os"
-	"sort"
 	"strings"
 )
 
 // state represents a node in the Aho-Corasick trie during construction.
-// Each state maintains links for pattern matching and failure transitions.
-// Child transitions are kept in a slice sorted by byte value: pattern
-// tries have tiny fan-out on average, so sorted-slice lookup beats a map
-// while keeping iteration order — and therefore state numbering and the
-// serialized form — deterministic.
+// States live in TrieBuilder.states and reference each other by index:
+// children form a singly linked sibling list kept sorted by byte value,
+// which makes the BFS numbering (and thus Encode output) deterministic
+// without a sort pass. Index-based value states keep the builder free
+// of per-node allocations and GC pointer scanning.
 type state struct {
-	parent   *state   // Parent state in the trie
-	failLink *state   // Failure link for the Aho-Corasick algorithm
-	dictLink *state   // Dictionary link to next matching pattern
-	children []*state // Child states sorted by transition byte value
-	id       uint32   // Unique identifier for this state
-	dict     uint32   // Length of pattern ending at this state (0 if none)
-	pattern  uint32   // Pattern number for matches at this state
-	value    byte     // Character value on incoming transition
-}
-
-// child returns the child reached on byte c, or nil.
-func (s *state) child(c byte) *state {
-	// Binary search; fan-out is usually small but can reach 256.
-	lo, hi := 0, len(s.children)
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if s.children[mid].value < c {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	if lo < len(s.children) && s.children[lo].value == c {
-		return s.children[lo]
-	}
-	return nil
-}
-
-// insertChild adds t to s.children, keeping the slice sorted by value.
-func (s *state) insertChild(t *state) {
-	i := sort.Search(len(s.children), func(k int) bool { return s.children[k].value >= t.value })
-	s.children = append(s.children, nil)
-	copy(s.children[i+1:], s.children[i:])
-	s.children[i] = t
+	firstChild uint32 // Head of the sorted sibling list (0 if leaf)
+	nextSib    uint32 // Next sibling in the parent's list (0 if last)
+	failLink   uint32 // Failure link for the Aho-Corasick algorithm
+	dictLink   uint32 // Dictionary link to next matching pattern
+	dict       uint32 // Length of pattern ending at this state (0 if none)
+	pattern    uint32 // Pattern number for matches at this state
+	value      byte   // Character value on incoming transition
 }
 
 // TrieBuilder constructs an Aho-Corasick string matching automaton.
 // It builds the trie structure incrementally and computes failure/dictionary
 // links before producing the final optimized Trie.
 type TrieBuilder struct {
-	states      []*state // All states in the trie
-	root        *state   // Root state of the trie
-	numPatterns uint32   // Number of patterns added
+	states      []state // All states; index 0 unused, index 1 is the root
+	numPatterns uint32  // Number of patterns added
 }
 
 // NewTrieBuilder creates and initializes a new TrieBuilder.
 // It creates two initial states - state 0 (unused) and state 1 (root).
 // State 0 exists to maintain consistency with the paper's state numbering.
 func NewTrieBuilder() *TrieBuilder {
-	tb := &TrieBuilder{
-		states:      make([]*state, 0),
-		root:        nil,
-		numPatterns: 0,
-	}
-	tb.addState(0, nil) // State 0 (unused)
-	tb.addState(0, nil) // State 1 (root)
-	tb.root = tb.states[1]
+	tb := &TrieBuilder{states: make([]state, 2)}
 	return tb
 }
 
-// addState creates a new state in the trie with the given byte value
-// and parent state. Returns the newly created state.
-func (tb *TrieBuilder) addState(value byte, parent *state) *state {
-	s := &state{
-		id:     uint32(len(tb.states)),
-		value:  value,
-		parent: parent,
+// child returns the index of s's child on byte c, or 0 if none.
+func (tb *TrieBuilder) child(s uint32, c byte) uint32 {
+	for t := tb.states[s].firstChild; t != 0; t = tb.states[t].nextSib {
+		if v := tb.states[t].value; v == c {
+			return t
+		} else if v > c {
+			return 0
+		}
 	}
-	tb.states = append(tb.states, s)
-	return s
+	return 0
+}
+
+// addChild inserts a new child of s on byte c, keeping the sibling list
+// sorted by byte value, and returns its index.
+func (tb *TrieBuilder) addChild(s uint32, c byte) uint32 {
+	id := uint32(len(tb.states))
+	tb.states = append(tb.states, state{value: c})
+
+	// Find the insertion point in the sorted sibling list.
+	prev := uint32(0)
+	next := tb.states[s].firstChild
+	for next != 0 && tb.states[next].value < c {
+		prev = next
+		next = tb.states[next].nextSib
+	}
+	tb.states[id].nextSib = next
+	if prev == 0 {
+		tb.states[s].firstChild = id
+	} else {
+		tb.states[prev].nextSib = id
+	}
+	return id
 }
 
 // AddPattern adds a byte pattern to the Trie under construction.
@@ -92,21 +78,20 @@ func (tb *TrieBuilder) addState(value byte, parent *state) *state {
 // for the pattern in the trie. The final state is marked with the
 // pattern length and assigned a unique pattern number.
 func (tb *TrieBuilder) AddPattern(pattern []byte) *TrieBuilder {
-	s := tb.root
+	s := rootState
 
 	// Follow/create the path for this pattern.
 	for _, c := range pattern {
-		t := s.child(c)
-		if t == nil {
-			t = tb.addState(c, s)
-			s.insertChild(t)
+		t := tb.child(s, c)
+		if t == 0 {
+			t = tb.addChild(s, c)
 		}
 		s = t
 	}
 
 	// Mark the final state with pattern info.
-	s.dict = uint32(len(pattern))
-	s.pattern = tb.numPatterns
+	tb.states[s].dict = uint32(len(pattern))
+	tb.states[s].pattern = tb.numPatterns
 	tb.numPatterns++
 
 	return tb
@@ -182,16 +167,10 @@ func (tb *TrieBuilder) LoadStrings(path string) error {
 // Build constructs the final Trie structure.
 // This involves:
 //  1. Computing failure and dictionary links.
-//  2. Renumbering states in BFS order (children visited in byte order)
-//     so frequently visited (shallow) states are packed together for
-//     cache and TLB locality, and so the numbering — and therefore the
-//     serialized form — is deterministic for a given pattern set.
-//  3. Converting the state graph into array-based representation: each
-//     state's transition row starts as a copy of its fail state's row
-//     (already complete, since fail states are strictly shallower and
-//     BFS builds shallow rows first) with the state's own children
-//     overwriting their bytes. This is the standard NFA-to-DFA row
-//     construction and avoids walking failure chains per (state, byte).
+//  2. Renumbering states in BFS order so frequently visited (shallow)
+//     states are packed together for cache and TLB locality.
+//  3. Converting the state graph into array-based representation,
+//     pre-computing all transitions and output flags in one DP pass.
 //  4. Setting up object pools for match results.
 func (tb *TrieBuilder) Build() *Trie {
 	// Compute failure and dictionary links needed for the Aho-Corasick algorithm.
@@ -208,17 +187,18 @@ func (tb *TrieBuilder) Build() *Trie {
 		panic("ahocorasick: too many states to build trie (max 2^31)")
 	}
 
-	// Renumber states breadth-first, children in byte order. The
-	// automaton spends nearly all its time in shallow states; giving
-	// them adjacent ids packs their transition rows into a small
-	// contiguous prefix of failTrans.
+	// Renumber states breadth-first. The automaton spends nearly all
+	// its time in shallow states; giving them adjacent ids packs their
+	// transition rows into a small contiguous prefix of failTrans.
+	// Sibling lists are sorted by byte, so the numbering — and thus
+	// Encode output — is deterministic for a given pattern set.
 	newID := make([]uint32, numStates)
-	order := make([]*state, 0, numStates)
-	order = append(order, tb.states[0], tb.root)
-	newID[tb.root.id] = 1
+	order := make([]uint32, 2, numStates)
+	order[0], order[1] = 0, rootState
+	newID[rootState] = 1
 	for qi := 1; qi < len(order); qi++ {
-		for _, t := range order[qi].children {
-			newID[t.id] = uint32(len(order))
+		for t := tb.states[order[qi]].firstChild; t != 0; t = tb.states[t].nextSib {
+			newID[t] = uint32(len(order))
 			order = append(order, t)
 		}
 	}
@@ -234,52 +214,78 @@ func (tb *TrieBuilder) Build() *Trie {
 	// Set up object pool for match buffer reuse.
 	trie.bufPool = newBufPool()
 
-	// Row 0 (unused state) and the root row: every byte either enters a
-	// root child or self-loops at the root.
-	rootRow := &trie.failTrans[1]
-	for b := range 256 {
-		rootRow[b] = 1
-	}
-	for _, t := range tb.root.children {
-		rootRow[t.value] = newID[t.id]
-	}
-	row0 := &trie.failTrans[0]
-	for b := range 256 {
-		row0[b] = 1
+	half := numStates <= failTrans16MaxStates
+	if half {
+		trie.failTrans16 = make([]uint16, numStates*256)
 	}
 
-	// Fill metadata and rows in BFS order. order[i] has new id i.
-	trie.dict[1] = tb.root.dict
-	trie.pattern[1] = tb.root.pattern
-	for i := 2; i < numStates; i++ {
-		s := order[i]
+	// Convert the state graph into arrays using the BFS numbering.
+	// Transition rows are built by the classic goto/fail dynamic
+	// program: a state's row is its fail state's row with the state's
+	// own children overwritten. BFS order guarantees the fail state
+	// (always shallower) is processed first, so each row is one 1KB
+	// copy plus one write per child instead of 256 fail-chain walks.
+	// Output flags ride along: copied entries keep the fail row's
+	// flags (same targets), and each own-child entry takes its flag
+	// straight from the child's dict/dictLink, so no separate flag
+	// pass over the table is needed. The half-width table is built by
+	// the same DP.
+	for i, sid := range order {
+		s := &tb.states[sid]
 		trie.dict[i] = s.dict
 		trie.pattern[i] = s.pattern
-		if s.dictLink != nil {
-			trie.dictLink[i] = newID[s.dictLink.id]
+		if s.dictLink != 0 {
+			trie.dictLink[i] = newID[s.dictLink]
 		}
-		// The fail state is strictly shallower, so its row (at a
-		// smaller BFS index) is already complete.
-		trie.failTrans[i] = trie.failTrans[newID[s.failLink.id]]
-		for _, t := range s.children {
-			trie.failTrans[i][t.value] = newID[t.id]
+		row := &trie.failTrans[i]
+		if sid == 0 || sid == rootState {
+			// State 0 (unused) and the root: every unclaimed byte
+			// goes to the root, which never emits.
+			for b := range row {
+				row[b] = rootState
+			}
+		} else {
+			// copy (memmove) beats a struct assignment (duffcopy)
+			// for the 1KB row on amd64.
+			copy(row[:], trie.failTrans[newID[s.failLink]][:])
 		}
-	}
-	if tb.root.dictLink != nil {
-		trie.dictLink[1] = newID[tb.root.dictLink.id]
+		var row16 []uint16
+		if half {
+			row16 = trie.failTrans16[i<<8 : i<<8+256]
+			if sid == 0 || sid == rootState {
+				for b := range row16 {
+					row16[b] = uint16(rootState)
+				}
+			} else {
+				copy(row16, trie.failTrans16[int(newID[s.failLink])<<8:])
+			}
+		}
+		for t := s.firstChild; t != 0; t = tb.states[t].nextSib {
+			ts := &tb.states[t]
+			v := newID[t]
+			if ts.dict != 0 || ts.dictLink != 0 {
+				v |= outputFlag
+			}
+			row[ts.value] = v
+			if half {
+				row16[ts.value] = packState16(v)
+			}
+		}
 	}
 
-	trie.addOutputFlags()
+	trie.buildDictPat()
 	trie.buildRootSkip()
-	trie.buildFailTrans16()
 	// Compute the live-byte set only when a scan path exists to read the
 	// class table; single-stop and failTrans16 tries never load it, and
 	// building it anyway would retain up to 512B/state of dead weight.
+	// Every state except 0 and the root is some state's child, and value
+	// is the byte on its incoming edge, so indexing the flat state slice
+	// yields the same set the child walk did.
 	if trie.classTableUsable() {
 		var live [256]bool
-		for _, s := range tb.states {
-			for _, t := range s.children {
-				live[t.value] = true
+		for i := range tb.states {
+			if i != 0 && uint32(i) != rootState {
+				live[tb.states[i].value] = true
 			}
 		}
 		trie.buildClassTable(&live)
@@ -289,26 +295,40 @@ func (tb *TrieBuilder) Build() *Trie {
 	return trie
 }
 
+// computeFailTransition determines the next state for a given state and input byte.
+// It follows failure links until it finds a valid transition or reaches the root.
+// Kept as the reference definition of the transition function; Build derives
+// the same values with the row DP, and TestDPEquivalence cross-checks them.
+func (tb *TrieBuilder) computeFailTransition(s uint32, c byte) uint32 {
+	for t := s; t != 0; t = tb.states[t].failLink {
+		if next := tb.child(t, c); next != 0 {
+			return next
+		}
+	}
+	return rootState
+}
+
 // computeFailLinks builds the failure links for the Aho-Corasick algorithm.
 // It performs a breadth-first traversal of the trie, setting each state's
 // failure link to the longest proper suffix that is also a prefix of some pattern.
 func (tb *TrieBuilder) computeFailLinks() {
-	queue := make([]*state, 0, len(tb.states)-1)
-	queue = append(queue, tb.root)
+	queue := make([]uint32, 1, len(tb.states))
+	queue[0] = rootState
 	for qi := 0; qi < len(queue); qi++ {
 		s := queue[qi]
-		for _, t := range s.children {
+		for t := tb.states[s].firstChild; t != 0; t = tb.states[t].nextSib {
 			queue = append(queue, t)
-			// Follow failure links until we find a state that has a
-			// transition on the current character, or reach the root.
-			fail := s.failLink
-			for fail != nil && fail.child(t.value) == nil {
-				fail = fail.failLink
+			// Follow failure links until we find a state that has a transition
+			// on the current character, or reach the root.
+			c := tb.states[t].value
+			fail := tb.states[s].failLink
+			for fail != 0 && tb.child(fail, c) == 0 {
+				fail = tb.states[fail].failLink
 			}
-			if fail != nil {
-				t.failLink = fail.child(t.value)
+			if fail != 0 {
+				tb.states[t].failLink = tb.child(fail, c)
 			} else {
-				t.failLink = tb.root
+				tb.states[t].failLink = rootState
 			}
 		}
 	}
@@ -318,15 +338,15 @@ func (tb *TrieBuilder) computeFailLinks() {
 // overlapping patterns. This allows finding all matching patterns that end
 // at the current position in a single traversal.
 func (tb *TrieBuilder) computeDictLinks() {
-	for _, s := range tb.states {
-		if s == tb.root {
+	for i := range tb.states {
+		if uint32(i) == rootState || i == 0 {
 			continue
 		}
 		// Follow failure links until we find a state that represents
 		// the end of some pattern.
-		for fail := s.failLink; fail != nil; fail = fail.failLink {
-			if fail.dict > 0 {
-				s.dictLink = fail
+		for fail := tb.states[i].failLink; fail != 0; fail = tb.states[fail].failLink {
+			if tb.states[fail].dict > 0 {
+				tb.states[i].dictLink = fail
 				break
 			}
 		}

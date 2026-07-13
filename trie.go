@@ -60,8 +60,9 @@ type Trie struct {
 	// loops when every state id fits in 15 bits (bit 15 carries the
 	// output flag). Rows are 512B instead of 1KB, halving the cache
 	// footprint of the table the serial dependency chain loads from.
-	// Built only when the single-stop-byte 16-bit matcher can use it
-	// (see buildFailTrans16); nil otherwise.
+	// Both the single-stop (matchStopByte16, walkStopByte16) and
+	// multi-stop (matchTable16, walkTable16) loops consume it; nil when
+	// the trie exceeds failTrans16MaxStates.
 	failTrans16 []uint16
 
 	// stopEntry16 is failTrans16[root][stopByte] when there is a single
@@ -187,6 +188,15 @@ func (tr *Trie) addOutputFlags() {
 		}
 	}
 
+	tr.buildDictPat()
+}
+
+// buildDictPat packs the per-state (pattern id, pattern length) pair
+// into one uint64 so the emit path loads both with a single access, and
+// records the longest pattern (the parallel scan's overlap width). The
+// builder fuses the output flags into its row DP and calls this
+// directly; the decode path reaches it through addOutputFlags.
+func (tr *Trie) buildDictPat() {
 	tr.dictPat = make([]uint64, len(tr.dict))
 	tr.maxLen = 0
 	for s := range tr.dict {
@@ -195,6 +205,22 @@ func (tr *Trie) addOutputFlags() {
 			tr.maxLen = tr.dict[s]
 		}
 	}
+}
+
+// failTrans16MaxStates is the largest state count the half-width table
+// can represent: entries pack the state id into 15 bits (bit 15 carries
+// the output flag), so one more state would truncate the highest id.
+// The builder's inline row DP and buildFailTrans16 both gate on it.
+const failTrans16MaxStates = 1 << 15
+
+// packState16 converts one full-width transition entry (15-bit state id
+// in stateMask, output flag at bit 31) into the half-width encoding
+// (state id in bits 0-14, output flag at bit 15). Callers must have
+// checked the state count against failTrans16MaxStates. Shared by the
+// builder's inline row DP and buildFailTrans16 so the two encodings
+// cannot drift.
+func packState16(v uint32) uint16 {
+	return uint16(v&stateMask) | uint16(v>>16)&(1<<15)
 }
 
 // buildFailTrans16 builds the half-width transition table whenever every
@@ -206,18 +232,13 @@ func (tr *Trie) addOutputFlags() {
 // after addOutputFlags (reads the flag bits).
 func (tr *Trie) buildFailTrans16() {
 	tr.failTrans16 = nil
-	if len(tr.failTrans) > 1<<15 {
+	if len(tr.failTrans) > failTrans16MaxStates {
 		return
 	}
 	tr.failTrans16 = make([]uint16, len(tr.failTrans)*256)
 	for s := range tr.failTrans {
 		for b := range 256 {
-			v := tr.failTrans[s][b]
-			w := uint16(v & stateMask)
-			if v&outputFlag != 0 {
-				w |= 1 << 15
-			}
-			tr.failTrans16[s<<8+b] = w
+			tr.failTrans16[s<<8+b] = packState16(tr.failTrans[s][b])
 		}
 	}
 }

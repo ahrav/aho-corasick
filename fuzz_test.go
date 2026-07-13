@@ -123,13 +123,14 @@ func fillWithMatches(size int, filler byte, needle string) []byte {
 // reference (naiveMatch, in differential_test.go). The seed corpus is
 // chosen to drive every reachable scan specialization in matchSeq/Match:
 //
-//   - >1 root stop byte  → matchTable / walkTable
-//   - 1 root stop byte   → matchStopByte16 / walkStopByte
+//   - >1 root stop byte  → matchTable16 / walkTable16
+//   - 1 root stop byte   → matchStopByte16 / walkStopByte16
 //   - 1 stop byte, large → matchDualStopByte16 + scanRange16
 //   - ≥ 32 KiB, table or stop-byte-dense → matchParallel (either family)
 //
-// matchStopByte (the uint32 single-stop-byte loop) needs >2^15 states and
-// is not reachable at fuzzing scale; it is covered only structurally. The
+// The uint32 loops (matchStopByte, matchTable, walkStopByte, walkTable)
+// need >failTrans16MaxStates states and are not reachable at fuzzing
+// scale; they are covered only structurally. The
 // Encode→Decode round-trip is a separate target (FuzzEncodeDecode) so the
 // gzip cost does not throttle exploration of the scan paths here.
 func FuzzMatch(f *testing.F) {
