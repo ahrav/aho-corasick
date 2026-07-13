@@ -369,3 +369,15 @@ func BenchmarkLabNoMatchBig(b *testing.B) {
 		b.Run(fmt.Sprintf("multi-%dm", size>>20), func(b *testing.B) { benchMatch(b, trMulti, input[:size]) })
 	}
 }
+
+// Sparse-trie single-stop match: one multi-byte pattern over prose. The
+// depth-1 state has a single continuation byte, so nearly every stop
+// byte in the input is a false anchor — the regime the inert-pair
+// rejection targets. Stays under the dual/parallel thresholds via the
+// density dispatch (stop-byte density ~1%), so this exercises the
+// single-cursor matchStopByte16 loop.
+func BenchmarkLabAnchor(b *testing.B) {
+	_, ibsen := labLoad(b)
+	tr := NewTrieBuilder().AddString("Hedvig").Build()
+	b.Run("ibsen-100k", func(b *testing.B) { benchMatch(b, tr, ibsen[:100000]) })
+}
