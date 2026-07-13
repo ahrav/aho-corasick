@@ -66,9 +66,44 @@ func TestDifferential32BitPaths(t *testing.T) {
 				return input
 			},
 		},
+		{
+			// Dense sample windows but asymmetric root gaps: the first
+			// half is ~half filler while the second half is nearly all
+			// stop bytes, so rootDense still passes but lane A root-skips
+			// through its gaps and exits the interleaved loop early,
+			// leaving scanRangeTable32 a substantial lane-B remainder
+			// with gaps of its own — the skipRootTable and early-return
+			// branches the lockstep dense case can never reach. A
+			// pattern planted across mid pins the lane boundary: matches
+			// ending < mid belong to lane A, >= mid to lane B.
+			"multi-stop-gappy",
+			[]string{"ab", "bc", "ca", "abc", "cab", "bbb"},
+			func(n int) []byte {
+				input := make([]byte, n)
+				for i := range input {
+					gap := 8 // first half: ~half the bytes are root gaps
+					if i >= n/2 {
+						gap = 14 // second half: occasional gaps only
+					}
+					if rng.Intn(16) < gap {
+						input[i] = byte('a' + rng.Intn(3))
+					} else {
+						input[i] = byte('x' + rng.Intn(8))
+					}
+				}
+				if n >= 8 {
+					copy(input[n/2-1:], "cab")
+					// Deterministic filler tail: the lane-B finisher's
+					// root skip finds no further stop byte and takes the
+					// i >= to early return.
+					input[n-2], input[n-1] = 'x', 'y'
+				}
+				return input
+			},
+		},
 	}
 
-	sizes := []int{0, 1, 100, 1000, 4096, 5000, 20000, 80000}
+	sizes := []int{0, 1, 100, 1000, 4096, 5000, 8191, 20000, 80000}
 
 	for _, c := range cases {
 		trie := NewTrieBuilder().AddStrings(c.patterns).Build()
