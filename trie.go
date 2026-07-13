@@ -835,6 +835,44 @@ func (tr *Trie) chainWalk(w []byte, warm int) (chainBytes, excursions int) {
 	return
 }
 
+// dualTableMin is the minimum input size for the dual-cursor table
+// scans: below it the rootDense sampling cost is a meaningful fraction
+// of the whole scan.
+const dualTableMin = 4096
+
+// rootDenseThreshold is the minimum number of root-leaving bytes in the
+// 768 sampled by rootDense (~28%) for the dual-cursor table scan.
+// Measured on Zen 4: natural text over the multi-stop word automata
+// samples at 15-20% (single-cursor wins by ~5%), concatenated dictionary
+// words at ~38% (dual wins by 35-43%).
+const rootDenseThreshold = 215
+
+// rootDense samples three 256-byte windows of input (head, middle, tail)
+// and reports whether enough bytes leave the root state for the
+// dual-cursor table scan to pay. Windows, not strided points, so
+// periodic inputs do not alias against the sample pattern.
+func (tr *Trie) rootDense(input []byte) bool {
+	rootStop := &tr.rootStop
+	n := len(input)
+	k := 0
+	for _, b := range input[:256] {
+		k += int(rootStop[b])
+	}
+	// A dense input with a near-empty head window is pathological;
+	// bail before sampling the other windows. Misclassification only
+	// picks the single-cursor loop, never wrong results.
+	if k < 8 {
+		return false
+	}
+	mid, tail := n/2-128, n-256
+	for _, w := range [2]int{mid, tail} {
+		for _, b := range input[w : w+256] {
+			k += int(rootStop[b])
+		}
+	}
+	return k >= rootDenseThreshold
+}
+
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
@@ -854,10 +892,211 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	if len(tr.rootStopBytes) == 1 {
 		tr.matchStopByte(input, buf)
 	} else if tr.failTrans16 != nil {
-		tr.matchTable16(input, buf)
+		if len(input) >= dualTableMin && int(tr.maxLen)*4 < len(input)/2 && tr.rootDense(input) {
+			tr.matchDualTable16(input, buf)
+		} else {
+			tr.matchTable16(input, buf)
+		}
 	} else {
-		tr.matchTable(input, buf)
+		if len(input) >= dualTableMin && int(tr.maxLen)*4 < len(input)/2 && tr.rootDense(input) {
+			tr.matchDualTable32(input, buf)
+		} else {
+			tr.matchTable(input, buf)
+		}
 	}
+}
+
+// scanRangeTable16 runs the multi-stop-byte automaton over input[i:to),
+// starting in state s, appending matches that end at or after minEmit to
+// raw, which is returned. Positions are absolute into input. The root
+// skip is bounded to input[:to]: bytes past to belong to the other lane,
+// and a root gap carries no automaton state worth keeping. Loads use
+// raw pointer arithmetic; see matchStopByte.
+func (tr *Trie) scanRangeTable16(input []byte, i, to int, s uint32, minEmit int, raw []uint64) []uint64 {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	for ; i < to; i++ {
+		if s == rootState {
+			if tr.rootStop[input[i]] == 0 {
+				i = tr.skipRootTable(input[:to], i)
+			}
+			if i >= to {
+				return raw
+			}
+		}
+
+		v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(s)<<9+uintptr(input[i])<<1)))
+		s = v &^ (1 << 15)
+		if v&(1<<15) != 0 && i >= minEmit {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
+				raw = append(raw, uint64(i), dp)
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				raw = append(raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+			}
+		}
+	}
+	return raw
+}
+
+// scanRangeTable32 is scanRangeTable16 on the full-width failTrans table.
+func (tr *Trie) scanRangeTable32(input []byte, i, to int, s uint32, minEmit int, raw []uint64) []uint64 {
+	ftBase := unsafe.Pointer(&tr.failTrans[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	for ; i < to; i++ {
+		if s == rootState {
+			if tr.rootStop[input[i]] == 0 {
+				i = tr.skipRootTable(input[:to], i)
+			}
+			if i >= to {
+				return raw
+			}
+		}
+
+		v := *(*uint32)(unsafe.Add(ftBase, uintptr(s)<<10+uintptr(input[i])<<2))
+		s = v & stateMask
+		if v&outputFlag != 0 && i >= minEmit {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
+				raw = append(raw, uint64(i), dp)
+			}
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				raw = append(raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+			}
+		}
+	}
+	return raw
+}
+
+// matchDualTable16 is the multi-stop-byte analog of matchDualStopByte16:
+// two independent cursors interleave over the two halves of input so
+// their serial transition-load chains overlap. Lane B starts maxLen-1
+// bytes before the midpoint and emits only matches ending at or after it
+// (see matchParallel for why that overlap suffices), so rawA followed by
+// rawB is exactly a sequential scan's output. Root gaps are skipped with
+// the rootStop table since several byte values leave the root.
+func (tr *Trie) matchDualTable16(input []byte, buf *matchBuf) {
+	ftBase := unsafe.Pointer(&tr.failTrans16[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	inputLen := len(input)
+	mid := inputLen / 2
+	startB := max(mid-int(tr.maxLen)+1, 0)
+
+	sA, sB := rootState, rootState
+	iA, iB := 0, startB
+	rawA, rawB := buf.raw, buf.raw2
+
+	for iA < mid && iB < inputLen {
+		// Lane A: one step — a whole root gap skip, or one transition.
+		// The gap search is bounded to lane A's half: a root gap
+		// carries no automaton state, so bytes at or past mid are lane
+		// B's alone (unbounded, a gap crossing mid would scan lane B's
+		// half twice); see matchDualStopByte16.
+		if sA == rootState && tr.rootStop[input[iA]] == 0 {
+			iA = tr.skipRootTable(input[:mid], iA)
+		} else {
+			v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sA)<<9+uintptr(input[iA])<<1)))
+			sA = v &^ (1 << 15)
+			if v&(1<<15) != 0 {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
+					rawA = append(rawA, uint64(iA), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iA++
+		}
+
+		// Lane B: same step shape.
+		if sB == rootState && tr.rootStop[input[iB]] == 0 {
+			iB = tr.skipRootTable(input, iB)
+		} else {
+			v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sB)<<9+uintptr(input[iB])<<1)))
+			sB = v &^ (1 << 15)
+			if v&(1<<15) != 0 && iB >= mid {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
+					rawB = append(rawB, uint64(iB), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iB++
+		}
+	}
+
+	// Finish whichever lane has input left.
+	rawA = tr.scanRangeTable16(input, iA, mid, sA, 0, rawA)
+	rawB = tr.scanRangeTable16(input, iB, inputLen, sB, mid, rawB)
+
+	// Concatenate: lane A ends < mid, lane B ends >= mid, so order is
+	// exactly the sequential scan's.
+	buf.raw = append(rawA, rawB...)
+	buf.raw2 = rawB[:0]
+}
+
+// matchDualTable32 is matchDualTable16 on the full-width failTrans table
+// (automata with too many states for 15-bit ids).
+func (tr *Trie) matchDualTable32(input []byte, buf *matchBuf) {
+	ftBase := unsafe.Pointer(&tr.failTrans[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
+
+	inputLen := len(input)
+	mid := inputLen / 2
+	startB := max(mid-int(tr.maxLen)+1, 0)
+
+	sA, sB := rootState, rootState
+	iA, iB := 0, startB
+	rawA, rawB := buf.raw, buf.raw2
+
+	for iA < mid && iB < inputLen {
+		// Lane A's gap search is bounded to its half; see
+		// matchDualTable16.
+		if sA == rootState && tr.rootStop[input[iA]] == 0 {
+			iA = tr.skipRootTable(input[:mid], iA)
+		} else {
+			v := *(*uint32)(unsafe.Add(ftBase, uintptr(sA)<<10+uintptr(input[iA])<<2))
+			sA = v & stateMask
+			if v&outputFlag != 0 {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
+					rawA = append(rawA, uint64(iA), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iA++
+		}
+
+		if sB == rootState && tr.rootStop[input[iB]] == 0 {
+			iB = tr.skipRootTable(input, iB)
+		} else {
+			v := *(*uint32)(unsafe.Add(ftBase, uintptr(sB)<<10+uintptr(input[iB])<<2))
+			sB = v & stateMask
+			if v&outputFlag != 0 && iB >= mid {
+				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
+					rawB = append(rawB, uint64(iB), dp)
+				}
+				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+				}
+			}
+			iB++
+		}
+	}
+
+	rawA = tr.scanRangeTable32(input, iA, mid, sA, 0, rawA)
+	rawB = tr.scanRangeTable32(input, iB, inputLen, sB, mid, rawB)
+
+	buf.raw = append(rawA, rawB...)
+	buf.raw2 = rawB[:0]
 }
 
 // scanRange16 runs the stop-byte automaton over input[i:to), starting in
