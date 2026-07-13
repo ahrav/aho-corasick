@@ -126,7 +126,7 @@ func fillWithMatches(size int, filler byte, needle string) []byte {
 //   - >1 root stop byte  → matchTable / walkTable
 //   - 1 root stop byte   → matchStopByte16 / walkStopByte
 //   - 1 stop byte, large → matchDualStopByte16 + scanRange16
-//   - input ≥ 16 KiB     → matchParallel (over either family)
+//   - ≥ 32 KiB, table or stop-byte-dense → matchParallel (either family)
 //
 // matchStopByte (the uint32 single-stop-byte loop) needs >2^15 states and
 // is not reachable at fuzzing scale; it is covered only structurally. The
@@ -142,9 +142,14 @@ func FuzzMatch(f *testing.F) {
 	f.Add(encodeSeed("ab", "abc", "abca"), []byte("xxabcaxxabxx"))
 	// 1 stop byte, large — dual-cursor path (≥1024, maxLen*4 < len/2).
 	f.Add(encodeSeed("ab", "abc", "abca"), fillWithMatches(4096, 'x', "abca"))
-	// 1 stop byte, ≥16 KiB — parallel path over dual-cursor chunks.
+	// 1 stop byte, ≥32 KiB but stop-byte-sparse (~1.5%) — pins the
+	// sparse branch of the parallel dispatch keeping the scan
+	// sequential below parallelSparseMin.
 	f.Add(encodeSeed("ab", "abc", "abca"), fillWithMatches(40000, 'x', "abca"))
-	// >1 stop byte, ≥16 KiB — parallel path over table chunks.
+	// 1 stop byte, ≥32 KiB and stop-byte-dense (25%) — parallel path
+	// over dual-cursor chunks.
+	f.Add(encodeSeed("ab", "abc", "abca"), bytes.Repeat([]byte("abcaxxxx"), 5000))
+	// >1 stop byte, ≥32 KiB — parallel path over table chunks.
 	f.Add(encodeSeed("ab", "bc", "ca"), fillWithMatches(40000, 'z', "abca"))
 	// Degenerate inputs.
 	f.Add(encodeSeed("a"), []byte(""))
@@ -153,8 +158,8 @@ func FuzzMatch(f *testing.F) {
 	// match end at *every* position, so a match necessarily lands exactly
 	// on the dual midpoint and every parallel chunk boundary — the
 	// boundaries the drop/rebase and lane-B emit conditions turn on.
-	f.Add(encodeSeed("a", "aa", "aaa"), bytes.Repeat([]byte("a"), 20000))
-	f.Add(encodeSeed("ab", "b", "bab"), bytes.Repeat([]byte("ab"), 10000))
+	f.Add(encodeSeed("a", "aa", "aaa"), bytes.Repeat([]byte("a"), 40000))
+	f.Add(encodeSeed("ab", "b", "bab"), bytes.Repeat([]byte("ab"), 20000))
 
 	f.Fuzz(func(t *testing.T, raw, input []byte) {
 		patterns := patternSetFromRaw(raw)
@@ -163,8 +168,11 @@ func FuzzMatch(f *testing.F) {
 		}
 		// Bound scan cost so no single exec can stall the fuzzer: the
 		// mutator readily grows input to megabytes, and the reference is
-		// O(len·maxLen). 64 KiB still reaches the parallel path (up to 8
-		// workers over 8 KiB chunks) and every dual-cursor boundary.
+		// O(len·maxLen). 64 KiB still reaches the parallel path for
+		// table and stop-byte-dense inputs (up to 8 workers over 8 KiB
+		// chunks) and every dual-cursor boundary; the sparse single-stop
+		// branch past parallelSparseMin is pinned by
+		// TestParallelWorkersPolicy instead.
 		const maxScan = 1 << 16
 		if len(input) > maxScan {
 			input = input[:maxScan]

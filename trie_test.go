@@ -2,6 +2,7 @@ package ahocorasick
 
 import (
 	"bufio"
+	"bytes"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -293,5 +294,86 @@ func TestFailTrans16Gate(t *testing.T) {
 	}
 	if got := multi.MatchString("zebra or amet"); len(got) != 3 {
 		t.Errorf("multiple stop bytes: expected 3 matches, got %d", len(got))
+	}
+}
+
+// buildBigSingleStopTrie builds a single-stop-byte trie with more than
+// 2^15 states, so failTrans16 stays nil and the sequential scan runs the
+// 32-bit matchStopByte loop. Every pattern starts with 'a' and continues
+// over a 32-byte suffix alphabet that excludes 'a', giving
+// 1 + 1 + 32 + 32^2 + 32^3 = 33826 states.
+func buildBigSingleStopTrie(t *testing.T) *Trie {
+	t.Helper()
+	patterns := make([]string, 0, 32*32*32)
+	for i := range 32 {
+		for j := range 32 {
+			for k := range 32 {
+				patterns = append(patterns,
+					string([]byte{'a', byte('A' + i), byte('A' + j), byte('A' + k)}))
+			}
+		}
+	}
+	tr := NewTrieBuilder().AddStrings(patterns).Build()
+	if tr.failTrans16 != nil {
+		t.Fatal("expected >2^15 states to leave failTrans16 nil")
+	}
+	if len(tr.rootStopBytes) != 1 {
+		t.Fatalf("expected a single root stop byte, got %d", len(tr.rootStopBytes))
+	}
+	return tr
+}
+
+// TestParallelWorkersPolicy pins the Match dispatch policy: the worker
+// count and size floors that route input to matchParallel, the sparse
+// single-stop-byte inputs that stay sequential up to parallelSparseMin
+// on both scan widths, and the single-CPU case that must never
+// parallelize regardless of density.
+func TestParallelWorkersPolicy(t *testing.T) {
+	single := NewTrieBuilder().AddStrings([]string{"ab", "abc", "abca"}).Build()
+	if single.failTrans16 == nil || len(single.rootStopBytes) != 1 {
+		t.Fatal("expected a 16-bit single-stop-byte trie")
+	}
+	multi := NewTrieBuilder().AddStrings([]string{"ab", "bc", "ca"}).Build()
+	if len(multi.rootStopBytes) != 0 {
+		t.Fatal("expected a table-path trie (no root stop byte set)")
+	}
+	big := buildBigSingleStopTrie(t)
+
+	// Stop byte 'a' at 1/16 bytes (~6%) sits under the ~10% density
+	// threshold; at 1/8 (~12.5%) it sits over.
+	sparse := func(size int) []byte {
+		return bytes.Repeat([]byte("axxxxxxxxxxxxxxx"), size/16)
+	}
+	dense := func(size int) []byte {
+		return bytes.Repeat([]byte("abcaxxxx"), size/8)
+	}
+
+	cases := []struct {
+		name     string
+		tr       *Trie
+		input    []byte
+		maxProcs int
+		want     int
+	}{
+		{"below parallelMin stays sequential", single, dense(16 << 10), 8, 0},
+		{"single CPU stays sequential", single, dense(40 << 10), 1, 0},
+		{"sparse below parallelSparseMin stays sequential", single, sparse(64 << 10), 8, 0},
+		{"sparse past parallelSparseMin parallelizes", single, sparse(160 << 10), 8, 8},
+		{"dense parallelizes from parallelMin", single, dense(40 << 10), 8, 5},
+		{"table path parallelizes from parallelMin", multi, sparse(40 << 10), 8, 5},
+		{"workers capped at 8", single, dense(160 << 10), 16, 8},
+		{"workers capped by GOMAXPROCS", single, dense(40 << 10), 2, 2},
+		{"32-bit sparse below parallelSparseMin stays sequential", big, sparse(64 << 10), 8, 0},
+		{"32-bit sparse past parallelSparseMin parallelizes", big, sparse(160 << 10), 8, 8},
+		{"32-bit dense parallelizes from parallelMin", big, dense(40 << 10), 8, 5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.tr.parallelWorkers(tc.input, tc.maxProcs); got != tc.want {
+				t.Errorf("parallelWorkers(len=%d, maxProcs=%d) = %d, want %d",
+					len(tc.input), tc.maxProcs, got, tc.want)
+			}
+		})
 	}
 }
