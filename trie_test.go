@@ -339,6 +339,19 @@ func TestParallelWorkersPolicy(t *testing.T) {
 	}
 	big := buildBigSingleStopTrie(t)
 
+	// A table-path trie with a 9000-byte pattern: overlap*4 is 35996,
+	// so at 256KiB the overlap shrink caps the workers at
+	// 262144/35996 = 7 where the plain caps would allow 8.
+	long := NewTrieBuilder().AddStrings([]string{
+		strings.Repeat("x", 9000), "ab", "cd",
+	}).Build()
+	if len(long.rootStopBytes) == 1 {
+		t.Fatal("expected the long-pattern trie to skip the density gate")
+	}
+	if long.maxLen != 9000 {
+		t.Fatalf("expected maxLen 9000, got %d", long.maxLen)
+	}
+
 	// Stop byte 'a' at 1/16 bytes (~6%) sits under the ~10% density
 	// threshold; at 1/8 (~12.5%) it sits over.
 	sparse := func(size int) []byte {
@@ -363,6 +376,14 @@ func TestParallelWorkersPolicy(t *testing.T) {
 		{"table path parallelizes from parallelMin", multi, sparse(40 << 10), 8, 5},
 		{"workers capped at 8", single, dense(160 << 10), 16, 8},
 		{"workers capped by GOMAXPROCS", single, dense(40 << 10), 2, 2},
+		{"256KiB holds the base cap", single, dense(256 << 10), 64, 8},
+		{"extended cap ramps at parallelChunkWide per worker", single, dense(512 << 10), 64, 16},
+		{"extended cap reaches 32 at 1MiB", single, dense(1 << 20), 64, 32},
+		{"extended cap stays below 32 just under 1MiB", single, dense((1 << 20) - 8), 64, 31},
+		{"extended cap saturates at 32", single, dense(2 << 20), 64, 32},
+		{"extended cap bounded by GOMAXPROCS", single, dense(2 << 20), 12, 12},
+		{"long patterns shrink the cap to clear the overlap guard", long, sparse(256 << 10), 64, 7},
+		{"overlap shrink below 2 workers stays sequential", long, sparse(64 << 10), 64, 0},
 		{"32-bit sparse below parallelSparseMin stays sequential", big, sparse(64 << 10), 8, 0},
 		{"32-bit sparse past parallelSparseMin parallelizes", big, sparse(160 << 10), 8, 8},
 		{"32-bit dense parallelizes from parallelMin", big, dense(40 << 10), 8, 5},

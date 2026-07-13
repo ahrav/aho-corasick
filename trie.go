@@ -706,6 +706,20 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 // below it, goroutine startup outweighs the scan work.
 const parallelChunk = 8 << 10
 
+// parallelChunkWide is the minimum bytes of input per worker goroutine
+// beyond the base cap of 8 workers. With the materialize tail no longer
+// serial, scan throughput keeps scaling past 8 workers, but only once
+// each worker holds a slice large enough to amortize its wakeup and
+// merge fan-in; at parallelChunk-sized slices the extra workers cost
+// more than they scan (measured: 256KB across 32 workers runs ~25%
+// slower than across 8).
+const parallelChunkWide = 32 << 10
+
+// parallelWorkersMax is the worker cap once slices reach
+// parallelChunkWide: scan throughput saturates near 32 workers
+// (measured on 48-core Zen 4).
+const parallelWorkersMax = 32
+
 // parallelMin is the minimum input size for the parallel scan. The
 // table-path automata scan slowly enough serially that workers pay for
 // themselves from 32KB, as do the single-stop-byte automata on
@@ -731,9 +745,21 @@ func (tr *Trie) parallelWorkers(input []byte, maxProcs int) int {
 	if len(input) < parallelMin {
 		return 0
 	}
-	// Cap at 8 workers: more of them mainly adds wakeup and steal
-	// latency while the post-scan merge is serial.
+	// Cap at 8 workers while each holds only a few parallelChunk-sized
+	// KB: more of them mainly adds wakeup and steal latency while the
+	// merge fan-in grows. Ramp toward parallelWorkersMax as slices
+	// reach parallelChunkWide, where the extra workers amortize.
 	p := min(maxProcs, len(input)/parallelChunk, 8)
+	if wide := min(maxProcs, len(input)/parallelChunkWide, parallelWorkersMax); wide > p {
+		p = wide
+	}
+	// Long patterns shrink the count further: matchParallel re-scans
+	// overlap := maxLen-1 bytes per chunk and falls back to a serial
+	// scan when overlap*4 > chunk, so keep every chunk at least four
+	// overlaps wide rather than losing parallelism outright.
+	if overlap := int(tr.maxLen) - 1; overlap > 0 {
+		p = min(p, len(input)/(overlap*4))
+	}
 	if p < 2 {
 		return 0
 	}
