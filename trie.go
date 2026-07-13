@@ -77,8 +77,15 @@ type Trie struct {
 	// column stands in for all of them; each pattern byte gets its own
 	// class. Rows shrink from 1KB to classStride*4 bytes, so the table
 	// the serial dependency chain loads from drops from hundreds of MB
-	// toward the L2/L3 sizes that dominate its latency. classOf maps an
-	// input byte to its class; classShift is log2 of the row stride.
+	// toward the L2/L3 sizes that dominate its latency.
+	//
+	// Entries are premultiplied row offsets with the emit flag in bit 0:
+	// (state << classShift) | emitFlag. The next transition's address is
+	// then base + (v&^1 + class)*4 — no shift on the serial chain — and
+	// the emit path recovers the state id (for dictPat/dictLink) with
+	// one shift on its own, rarely-taken branch. The minimum stride of 2
+	// keeps bit 0 free. classOf maps an input byte to its class;
+	// classShift is log2 of the row stride.
 	failTransC []uint32
 	classOf    [256]uint8
 	classShift uint32
@@ -232,9 +239,10 @@ const classStrideMax = 128
 
 // classTableStride returns the failTransC row stride a live set implies —
 // the class count (the shared dead class plus one class per live byte)
-// rounded up to a power of two — or 0 when the row would exceed
-// classStrideMax and buildClassTable declines to build. Callers can price
-// the table (len(failTrans) * stride * 4 bytes) before building it.
+// rounded up to a power of two, minimum 2 (entries carry the emit flag in
+// bit 0, so premultiplied offsets must be even) — or 0 when the row would
+// exceed classStrideMax and buildClassTable declines to build. Callers can
+// price the table (len(failTrans) * stride * 4 bytes) before building it.
 func classTableStride(live *[256]bool) int {
 	numClasses := 1
 	for b := range 256 {
@@ -242,7 +250,7 @@ func classTableStride(live *[256]bool) int {
 			numClasses++
 		}
 	}
-	stride := 1
+	stride := 2
 	for stride < numClasses {
 		stride <<= 1
 	}
@@ -284,10 +292,20 @@ func (tr *Trie) buildClassTable(live *[256]bool) {
 	}
 
 	shift := uint32(bits.TrailingZeros(uint(stride)))
+
+	// Premultiplied offsets must fit 31 bits with the flag in bit 0.
+	// (Unreachable below the classStrideMax gate — with classStrideMax=128
+	// (shift <= 7) this would require >= 2^24 states — but keep the
+	// invariant explicit.)
+	if uint64(len(tr.failTrans))<<shift >= 1<<31 {
+		return
+	}
+
 	tr.classShift = shift
 	// Only live columns need copying: dead columns are all class 0,
-	// pre-set to the root. Iterating the live list keeps this pass
-	// O(states x liveBytes) instead of O(states x 256).
+	// pre-set to the root's premultiplied offset. Iterating the live
+	// list keeps this pass O(states x liveBytes) instead of
+	// O(states x 256).
 	liveList := make([]int, 0, numClasses-1)
 	for b := range 256 {
 		if live[b] {
@@ -298,9 +316,14 @@ func (tr *Trie) buildClassTable(live *[256]bool) {
 	for s := range tr.failTrans {
 		row := &tr.failTrans[s]
 		crow := tr.failTransC[s<<shift : s<<shift+stride]
-		crow[0] = rootState
+		crow[0] = rootState << shift
 		for _, b := range liveList {
-			crow[tr.classOf[b]] = row[b]
+			v := row[b]
+			w := (v & stateMask) << shift
+			if v&outputFlag != 0 {
+				w |= 1
+			}
+			crow[tr.classOf[b]] = w
 		}
 	}
 }
@@ -1147,8 +1170,13 @@ func (tr *Trie) scanRangeTableC(input []byte, i, to int, s uint32, minEmit int, 
 	classOf := &tr.classOf
 	shift := tr.classShift
 
+	// The cursor is a premultiplied row offset, not a state id; see
+	// failTransC. rootOff spots root residence for the skip.
+	sOff := uintptr(s) << shift
+	rootOff := uintptr(rootState) << shift
+
 	for ; i < to; i++ {
-		if s == rootState {
+		if sOff == rootOff {
 			if tr.rootStop[input[i]] == 0 {
 				i = tr.skipRootTable(input, i)
 			}
@@ -1157,13 +1185,14 @@ func (tr *Trie) scanRangeTableC(input []byte, i, to int, s uint32, minEmit int, 
 			}
 		}
 
-		v := *(*uint32)(unsafe.Add(ftBase, (uintptr(s)<<shift+uintptr(classOf[input[i]]))<<2))
-		s = v & stateMask
-		if v&outputFlag != 0 && i >= minEmit {
-			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 {
+		v := *(*uint32)(unsafe.Add(ftBase, (sOff+uintptr(classOf[input[i]]))<<2))
+		sOff = uintptr(v &^ 1)
+		if v&1 != 0 && i >= minEmit {
+			st := sOff >> shift
+			if dp := *(*uint64)(unsafe.Add(dpBase, st<<3)); uint32(dp) != 0 {
 				raw = append(raw, uint64(i), dp)
 			}
-			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+			for u := *(*uint32)(unsafe.Add(dlBase, st<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
 				raw = append(raw, uint64(i), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
 			}
 		}
@@ -1183,37 +1212,41 @@ func (tr *Trie) matchDualTableC(input []byte, buf *matchBuf) {
 	mid := inputLen / 2
 	startB := max(mid-int(tr.maxLen)+1, 0)
 
-	sA, sB := rootState, rootState
+	// Lane cursors are premultiplied row offsets; see failTransC.
+	rootOff := uintptr(rootState) << shift
+	sOffA, sOffB := rootOff, rootOff
 	iA, iB := 0, startB
 	rawA, rawB := buf.raw, buf.raw2
 
 	for iA < mid && iB < inputLen {
-		if sA == rootState && tr.rootStop[input[iA]] == 0 {
+		if sOffA == rootOff && tr.rootStop[input[iA]] == 0 {
 			iA = tr.skipRootTable(input, iA)
 		} else {
-			v := *(*uint32)(unsafe.Add(ftBase, (uintptr(sA)<<shift+uintptr(classOf[input[iA]]))<<2))
-			sA = v & stateMask
-			if v&outputFlag != 0 {
-				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
+			v := *(*uint32)(unsafe.Add(ftBase, (sOffA+uintptr(classOf[input[iA]]))<<2))
+			sOffA = uintptr(v &^ 1)
+			if v&1 != 0 {
+				st := sOffA >> shift
+				if dp := *(*uint64)(unsafe.Add(dpBase, st<<3)); uint32(dp) != 0 {
 					rawA = append(rawA, uint64(iA), dp)
 				}
-				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				for u := *(*uint32)(unsafe.Add(dlBase, st<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
 					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
 				}
 			}
 			iA++
 		}
 
-		if sB == rootState && tr.rootStop[input[iB]] == 0 {
+		if sOffB == rootOff && tr.rootStop[input[iB]] == 0 {
 			iB = tr.skipRootTable(input, iB)
 		} else {
-			v := *(*uint32)(unsafe.Add(ftBase, (uintptr(sB)<<shift+uintptr(classOf[input[iB]]))<<2))
-			sB = v & stateMask
-			if v&outputFlag != 0 && iB >= mid {
-				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
+			v := *(*uint32)(unsafe.Add(ftBase, (sOffB+uintptr(classOf[input[iB]]))<<2))
+			sOffB = uintptr(v &^ 1)
+			if v&1 != 0 && iB >= mid {
+				st := sOffB >> shift
+				if dp := *(*uint64)(unsafe.Add(dpBase, st<<3)); uint32(dp) != 0 {
 					rawB = append(rawB, uint64(iB), dp)
 				}
-				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				for u := *(*uint32)(unsafe.Add(dlBase, st<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
 					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
 				}
 			}
@@ -1221,8 +1254,8 @@ func (tr *Trie) matchDualTableC(input []byte, buf *matchBuf) {
 		}
 	}
 
-	rawA = tr.scanRangeTableC(input, iA, mid, sA, 0, rawA)
-	rawB = tr.scanRangeTableC(input, iB, inputLen, sB, mid, rawB)
+	rawA = tr.scanRangeTableC(input, iA, mid, uint32(sOffA>>shift), 0, rawA)
+	rawB = tr.scanRangeTableC(input, iB, inputLen, uint32(sOffB>>shift), mid, rawB)
 
 	buf.raw = append(rawA, rawB...)
 	buf.raw2 = rawB[:0]
