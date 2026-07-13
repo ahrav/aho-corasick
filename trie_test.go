@@ -378,6 +378,8 @@ func TestParallelWorkersPolicy(t *testing.T) {
 		{"workers capped by GOMAXPROCS", single, dense(40 << 10), 2, 2},
 		{"256KiB holds the base cap", single, dense(256 << 10), 64, 8},
 		{"extended cap ramps at parallelChunkWide per worker", single, dense(512 << 10), 64, 16},
+		{"extended cap reaches 32 at 1MiB", single, dense(1 << 20), 64, 32},
+		{"extended cap stays below 32 just under 1MiB", single, dense((1 << 20) - 8), 64, 31},
 		{"extended cap saturates at 32", single, dense(2 << 20), 64, 32},
 		{"extended cap bounded by GOMAXPROCS", single, dense(2 << 20), 12, 12},
 		{"long patterns shrink the cap to clear the overlap guard", long, sparse(256 << 10), 64, 7},
