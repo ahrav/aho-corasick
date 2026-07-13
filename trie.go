@@ -829,20 +829,30 @@ const parallelSparseMin = 128 << 10
 // sample so a process that can never parallelize (maxProcs 1) does not
 // pay for sampling it cannot act on.
 func (tr *Trie) parallelWorkers(input []byte, maxProcs int) int {
+	p, _, _ := tr.parallelWorkersDense(input, maxProcs)
+	return p
+}
+
+// parallelWorkersDense is parallelWorkers, additionally returning the
+// stop-byte density verdict when the sparse check sampled it (valid iff
+// denseKnown): the sample costs three vectorized bytes.Count calls, and
+// the sequential dual-cursor gate wants the same signal, so a sequential
+// verdict hands it down instead of sampling the input twice.
+func (tr *Trie) parallelWorkersDense(input []byte, maxProcs int) (p int, dense, denseKnown bool) {
 	// A one-pattern trie scans with vectorized substring search at
 	// memory bandwidth (see single.go); worker goroutines and the
 	// density gates below cannot beat it.
 	if tr.single != nil {
-		return 0
+		return 0, false, false
 	}
 	if len(input) < parallelMin {
-		return 0
+		return 0, false, false
 	}
 	// Cap at 8 workers while each holds only a few parallelChunk-sized
 	// KB: more of them mainly adds wakeup and steal latency while the
 	// merge fan-in grows. Ramp toward parallelWorkersMax as slices
 	// reach parallelChunkWide, where the extra workers amortize.
-	p := min(maxProcs, len(input)/parallelChunk, 8)
+	p = min(maxProcs, len(input)/parallelChunk, 8)
 	if wide := min(maxProcs, len(input)/parallelChunkWide, parallelWorkersMax); wide > p {
 		p = wide
 	}
@@ -868,28 +878,35 @@ func (tr *Trie) parallelWorkers(input []byte, maxProcs int) int {
 		p = min(p, len(input)/(overlap*4))
 	}
 	if p < 2 {
-		return 0
+		return 0, false, false
 	}
 	// Between the two thresholds, a single-stop-byte automaton stays
 	// sequential on sparse input; past parallelSparseMin both floors
 	// are cleared, so the sample is skipped outright.
-	if len(input) < parallelSparseMin && len(tr.rootStopBytes) == 1 &&
-		!looksDense(input, tr.rootStopBytes[0]) {
-		return 0
+	if len(input) < parallelSparseMin && len(tr.rootStopBytes) == 1 {
+		dense = looksDense(input, tr.rootStopBytes[0])
+		if !dense {
+			return 0, false, true
+		}
+		return p, true, true
 	}
-	return p
+	return p, false, false
 }
 
 // Match runs the Aho-Corasick string-search algorithm on a byte input.
 func (tr *Trie) Match(input []byte) []*Match {
-	if p := tr.parallelWorkers(input, runtime.GOMAXPROCS(0)); p > 0 {
+	// When the parallel gate sampled stop-byte density and the scan
+	// stays sequential, its verdict is threaded to matchSeq so the
+	// dual-cursor gate does not sample the same input again.
+	p, dense, denseKnown := tr.parallelWorkersDense(input, runtime.GOMAXPROCS(0))
+	if p > 0 {
 		return tr.matchParallel(input, p)
 	}
 
 	buf := tr.bufPool.Get().(*matchBuf)
 	buf.reset()
 
-	tr.matchSeq(input, buf)
+	tr.matchSeqDense(input, buf, dense, denseKnown)
 
 	if len(buf.raw) == 0 {
 		tr.bufPool.Put(buf)
@@ -1015,8 +1032,19 @@ const dualChainFloor = 10
 // prefix) are outvoted by the windows that saw the input's real shape
 // instead of deciding for them.
 func (tr *Trie) dualWorthwhile(input []byte) bool {
-	dense := looksDense(input, tr.rootStopBytes[0])
+	return tr.dualWorthwhileDense(input, false, false)
+}
+
+// dualWorthwhileDense is dualWorthwhile with an optional precomputed
+// stop-byte density verdict (valid when denseKnown): Match's parallel
+// gate may already have sampled the input. Density is also now sampled
+// lazily — only on the paths that consult it — so a decisive chain
+// vote pays for no density sample at all.
+func (tr *Trie) dualWorthwhileDense(input []byte, dense, denseKnown bool) bool {
 	if len(input) < dualChainFloor*(int(tr.maxLen)+1024) {
+		if !denseKnown {
+			dense = looksDense(input, tr.rootStopBytes[0])
+		}
 		return dense
 	}
 	long, short := tr.chainSample(input)
@@ -1025,6 +1053,9 @@ func (tr *Trie) dualWorthwhile(input []byte) bool {
 	}
 	if short > long {
 		return false
+	}
+	if !denseKnown {
+		dense = looksDense(input, tr.rootStopBytes[0])
 	}
 	return dense
 }
@@ -1175,6 +1206,14 @@ func (tr *Trie) rootLively(input []byte) bool {
 
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
+	tr.matchSeqDense(input, buf, false, false)
+}
+
+// matchSeqDense is matchSeq with an optional precomputed stop-byte
+// density verdict (valid when denseKnown): Match's parallel gate may
+// already have sampled the input, and the sample costs real time
+// against skip-dominated scans.
+func (tr *Trie) matchSeqDense(input []byte, buf *matchBuf, dense, denseKnown bool) {
 	if tr.single != nil {
 		tr.matchSingle(input, buf)
 		return
@@ -1186,7 +1225,7 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 		// fallback signal) says overlapping two transition chains beats
 		// the single-cursor loop's inline root skip.
 		if len(input) >= dualThreshold && int(tr.maxLen)*4 < len(input)/2 &&
-			tr.dualWorthwhile(input) {
+			tr.dualWorthwhileDense(input, dense, denseKnown) {
 			tr.matchDualStopByte16(input, buf)
 			return
 		}
