@@ -464,8 +464,8 @@ const dualDenseThreshold = 410
 
 // sampleWindows returns the three 1KB windows (head, middle, tail) that
 // looksDense samples; the caller guarantees len(input) > 4096.
-// chainHeavy samples the same regions but shifts its head window to
-// start after the automaton warm-up prefix (see chainHeavy).
+// chainSample deliberately uses different offsets (the 1/8, 3/8, 5/8,
+// 7/8 points) so the two dispatch signals do not share blind spots.
 func sampleWindows(input []byte) [3][]byte {
 	mid := len(input) / 2
 	return [3][]byte{input[:1024], input[mid : mid+1024], input[len(input)-1024:]}
@@ -479,8 +479,8 @@ func sampleWindows(input []byte) [3][]byte {
 // Stop-byte density is a proxy for excursion *starts*, not for bytes
 // spent inside excursions, so it under-reports the in-chain share when
 // patterns are long: input following 100-byte patterns sits near 1%
-// density while nearly every byte is a serial transition load. chainHeavy
-// is the second gate that catches that regime.
+// density while nearly every byte is a serial transition load. The
+// chainSample vote in dualWorthwhile catches that regime.
 func looksDense(input []byte, c byte) bool {
 	n := len(input)
 	if n <= 4096 {
