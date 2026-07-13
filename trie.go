@@ -91,6 +91,23 @@ type Trie struct {
 	classOf    [256]uint8
 	classShift uint32
 
+	// single holds the pattern of a one-pattern trie; nil otherwise.
+	// A single pattern needs no automaton at all: the scan entry points
+	// use vectorized substring search (see single.go) instead of walking
+	// transition rows, which also skips every sampling/dispatch gate.
+	// singleDP is the packed (pattern id, length) pair of the emitting
+	// state, and singleSkip the pattern's KMP period (n - lps):
+	// consecutive occurrence starts differ by at least the period, so
+	// advancing by it after each hit finds every overlapping occurrence
+	// while keeping the rescan linear on periodic patterns. singleO1
+	// and singleO2 are the offsets of the two rarest pattern bytes (by
+	// static frequency rank), used as candidate filters.
+	single     []byte
+	singleDP   uint64
+	singleSkip int
+	singleO1   int
+	singleO2   int
+
 	bufPool sync.Pool // Pool of *matchBuf
 }
 
@@ -547,6 +564,10 @@ type WalkFn func(end, n, pattern uint32) bool
 // Walk runs the algorithm on a given output, calling the supplied callback function on every
 // match. The algorithm will terminate if the callback function returns false.
 func (tr *Trie) Walk(input []byte, fn WalkFn) {
+	if tr.single != nil {
+		tr.walkSingle(input, fn)
+		return
+	}
 	if tr.failTrans16 != nil {
 		if len(tr.rootStopBytes) == 1 {
 			tr.walkStopByte16(input, fn)
@@ -808,6 +829,12 @@ const parallelSparseMin = 128 << 10
 // sample so a process that can never parallelize (maxProcs 1) does not
 // pay for sampling it cannot act on.
 func (tr *Trie) parallelWorkers(input []byte, maxProcs int) int {
+	// A one-pattern trie scans with vectorized substring search at
+	// memory bandwidth (see single.go); worker goroutines and the
+	// density gates below cannot beat it.
+	if tr.single != nil {
+		return 0
+	}
 	if len(input) < parallelMin {
 		return 0
 	}
@@ -1148,6 +1175,10 @@ func (tr *Trie) rootLively(input []byte) bool {
 
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
+	if tr.single != nil {
+		tr.matchSingle(input, buf)
+		return
+	}
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
 		// Dual-scan only when the maxLen-1 bytes lane B re-scans are a
 		// small fraction of a half, and the input's excursion shape

@@ -291,6 +291,7 @@ func (tb *TrieBuilder) Build() *Trie {
 		trie.buildClassTable(&live)
 	}
 	trie.setStopEntry()
+	trie.buildSinglePattern()
 
 	return trie
 }
