@@ -3,12 +3,17 @@ package ahocorasick
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
 	"testing"
 )
 
 // TestCharacterize prints structural facts about the benchmark automaton.
-// Lab-only diagnostic, not part of the upstream suite.
+// Lab-only diagnostic, not part of the upstream suite: it builds automata
+// up to 100k patterns, so it only runs when explicitly requested.
 func TestCharacterize(t *testing.T) {
+	if os.Getenv("AC_LAB") == "" {
+		t.Skip("lab-only diagnostic; set AC_LAB=1 to run")
+	}
 	patterns, err := readPatterns("./test_data/NSF-ordlisten.cleaned.txt")
 	if err != nil {
 		t.Skip(err)
@@ -35,18 +40,16 @@ func TestCharacterize(t *testing.T) {
 	fmt.Printf("ibsen[:100000] matches=%d\n", len(ms2))
 
 	// how many bytes leave root (stop bytes) for 10k?
-	stops := 0
-	for b := 0; b < 256; b++ {
-		if tr.rootStop[b] == 1 {
-			stops++
-		}
-	}
-	fmt.Printf("10k stop bytes=%d\n", stops)
+	fmt.Printf("10k stop bytes=%d\n", countStop(tr))
 
-	// emit stats: how many states emit, dictLink chain depth histogram
-	emit, deep := 0, 0
+	// emit stats: direct terminal states, states that emit at all (dict
+	// or dictLink, mirroring addOutputFlags), and dictLink chain depth.
+	direct, emit, deep := 0, 0, 0
 	for s := range tr.dict {
 		if tr.dict[s] != 0 {
+			direct++
+		}
+		if tr.dict[s] != 0 || tr.dictLink[s] != nilState {
 			emit++
 		}
 		d := 0
@@ -57,7 +60,8 @@ func TestCharacterize(t *testing.T) {
 			deep = d
 		}
 	}
-	fmt.Printf("10k emitting states=%d/%d maxDictChain=%d\n", emit, len(tr.dict), deep)
+	fmt.Printf("10k emitting states=%d/%d (direct terminals=%d) maxDictChain=%d\n",
+		emit, len(tr.dict), direct, deep)
 }
 
 func countStop(tr *Trie) int {

@@ -31,8 +31,12 @@ func Decode(r io.Reader) (*Trie, error) {
 // DecodeWithMaxStates is Decode with a caller-supplied ceiling on the number of
 // automaton states. The bound caps the memory a corrupt or hostile stream can
 // make Decode allocate — failTrans costs one [256]uint32 row (1 KiB) per state
-// — so choose a value the process can afford. A non-positive maxStates falls
-// back to DecodeMaxStates.
+// — so choose a value the process can afford. Derived acceleration tables stay
+// within the same budget: the byte-class-compressed table a large trie may
+// rebuild after decoding (at most 512 B per state) is built only when it fits
+// in the headroom between the actual state count and maxStates, so total table
+// memory never exceeds maxStates KiB. A non-positive maxStates falls back to
+// DecodeMaxStates.
 func DecodeWithMaxStates(r io.Reader, maxStates int) (*Trie, error) {
 	dec := newDecoder(r)
 	return dec.decode(maxStates)
@@ -235,8 +239,23 @@ func (dec *decoder) decode(maxStates int) (*Trie, error) {
 	trie.addOutputFlags()
 	trie.buildRootSkip()
 	trie.buildFailTrans16()
-	if trie.failTrans16 == nil {
-		trie.buildClassTable(trie.derivedLiveBytes())
+	if trie.classTableUsable() {
+		// The maxStates contract prices decode memory in failTrans rows:
+		// 1 KiB per state, at most maxStates states. failTransC is on
+		// top of that, so build it only from budget the cap leaves
+		// unused — stride*4 bytes per state must fit in the
+		// (maxStates - states) KiB of headroom — keeping total table
+		// memory within the maxStates KiB the caller signed up for.
+		// spare cannot underflow: failTransLen <= maxStates was checked
+		// above. The spare >= failTransLen short-circuit is exact (the
+		// class row is at most half the 1 KiB full row) and keeps
+		// spare*1024 from overflowing under absurd caller-picked caps.
+		live := trie.derivedLiveBytes()
+		spare := uint64(maxStates) - failTransLen
+		if stride := classTableStride(live); stride != 0 &&
+			(spare >= failTransLen || uint64(stride*4)*failTransLen <= spare*1024) {
+			trie.buildClassTable(live)
+		}
 	}
 	trie.setStopEntry()
 	return trie, nil
