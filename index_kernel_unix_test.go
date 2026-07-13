@@ -1,4 +1,4 @@
-//go:build arm64 && !purego && unix
+//go:build (arm64 || amd64) && !purego && unix
 
 package ahocorasick
 
