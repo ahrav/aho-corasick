@@ -1309,10 +1309,9 @@ func (tr *Trie) matchDualTableC(input []byte, buf *matchBuf) {
 	iA, iB := 0, startB
 	rawA, rawB := buf.raw, buf.raw2
 
+	// See matchDualTable16 for why the interleaved loop has no skip.
 	for iA < mid && iB < inputLen {
-		if sOffA == rootOff && tr.rootStop[input[iA]] == 0 {
-			iA = tr.skipRootTable(input, iA)
-		} else {
+		{
 			v := *(*uint32)(unsafe.Add(ftBase, (sOffA+uintptr(classOf[input[iA]]))<<2))
 			sOffA = uintptr(v &^ 1)
 			if v&1 != 0 {
@@ -1327,9 +1326,7 @@ func (tr *Trie) matchDualTableC(input []byte, buf *matchBuf) {
 			iA++
 		}
 
-		if sOffB == rootOff && tr.rootStop[input[iB]] == 0 {
-			iB = tr.skipRootTable(input, iB)
-		} else {
+		{
 			v := *(*uint32)(unsafe.Add(ftBase, (sOffB+uintptr(classOf[input[iB]]))<<2))
 			sOffB = uintptr(v &^ 1)
 			if v&1 != 0 && iB >= mid {
@@ -1437,15 +1434,16 @@ func (tr *Trie) matchDualTable16(input []byte, buf *matchBuf) {
 	iA, iB := 0, startB
 	rawA, rawB := buf.raw, buf.raw2
 
+	// No root-gap skip inside the interleaved loop: the rootDense gate
+	// admits only inputs whose mean root gap is a few bytes, and there
+	// the per-step root-residence check plus the skipRootTable call
+	// cost more than stepping the table through the gap (measured on
+	// Graviton3: removing the skip wins 27-65% across the admitted
+	// density range, and the win grows with density). The sequential
+	// tail scanners below keep their skip for the leftover ranges.
 	for iA < mid && iB < inputLen {
-		// Lane A: one step — a whole root gap skip, or one transition.
-		// The gap search is bounded to lane A's half: a root gap
-		// carries no automaton state, so bytes at or past mid are lane
-		// B's alone (unbounded, a gap crossing mid would scan lane B's
-		// half twice); see matchDualStopByte16.
-		if sA == rootState && tr.rootStop[input[iA]] == 0 {
-			iA = tr.skipRootTable(input[:mid], iA)
-		} else {
+		// Lane A: one transition per step.
+		{
 			v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sA)<<9+uintptr(input[iA])<<1)))
 			sA = v &^ (1 << 15)
 			if v&(1<<15) != 0 {
@@ -1460,9 +1458,7 @@ func (tr *Trie) matchDualTable16(input []byte, buf *matchBuf) {
 		}
 
 		// Lane B: same step shape.
-		if sB == rootState && tr.rootStop[input[iB]] == 0 {
-			iB = tr.skipRootTable(input, iB)
-		} else {
+		{
 			v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sB)<<9+uintptr(input[iB])<<1)))
 			sB = v &^ (1 << 15)
 			if v&(1<<15) != 0 && iB >= mid {
@@ -1502,12 +1498,9 @@ func (tr *Trie) matchDualTable32(input []byte, buf *matchBuf) {
 	iA, iB := 0, startB
 	rawA, rawB := buf.raw, buf.raw2
 
+	// See matchDualTable16 for why the interleaved loop has no skip.
 	for iA < mid && iB < inputLen {
-		// Lane A's gap search is bounded to its half; see
-		// matchDualTable16.
-		if sA == rootState && tr.rootStop[input[iA]] == 0 {
-			iA = tr.skipRootTable(input[:mid], iA)
-		} else {
+		{
 			v := *(*uint32)(unsafe.Add(ftBase, uintptr(sA)<<10+uintptr(input[iA])<<2))
 			sA = v & stateMask
 			if v&outputFlag != 0 {
@@ -1521,9 +1514,7 @@ func (tr *Trie) matchDualTable32(input []byte, buf *matchBuf) {
 			iA++
 		}
 
-		if sB == rootState && tr.rootStop[input[iB]] == 0 {
-			iB = tr.skipRootTable(input, iB)
-		} else {
+		{
 			v := *(*uint32)(unsafe.Add(ftBase, uintptr(sB)<<10+uintptr(input[iB])<<2))
 			sB = v & stateMask
 			if v&outputFlag != 0 && iB >= mid {
