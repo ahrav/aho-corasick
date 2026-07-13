@@ -908,7 +908,9 @@ func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 
 // scanRangeTable16 runs the multi-stop-byte automaton over input[i:to),
 // starting in state s, appending matches that end at or after minEmit to
-// raw, which is returned. Positions are absolute into input. Loads use
+// raw, which is returned. Positions are absolute into input. The root
+// skip is bounded to input[:to]: bytes past to belong to the other lane,
+// and a root gap carries no automaton state worth keeping. Loads use
 // raw pointer arithmetic; see matchStopByte.
 func (tr *Trie) scanRangeTable16(input []byte, i, to int, s uint32, minEmit int, raw []uint64) []uint64 {
 	ftBase := unsafe.Pointer(&tr.failTrans16[0])
@@ -918,7 +920,7 @@ func (tr *Trie) scanRangeTable16(input []byte, i, to int, s uint32, minEmit int,
 	for ; i < to; i++ {
 		if s == rootState {
 			if tr.rootStop[input[i]] == 0 {
-				i = tr.skipRootTable(input, i)
+				i = tr.skipRootTable(input[:to], i)
 			}
 			if i >= to {
 				return raw
@@ -948,7 +950,7 @@ func (tr *Trie) scanRangeTable32(input []byte, i, to int, s uint32, minEmit int,
 	for ; i < to; i++ {
 		if s == rootState {
 			if tr.rootStop[input[i]] == 0 {
-				i = tr.skipRootTable(input, i)
+				i = tr.skipRootTable(input[:to], i)
 			}
 			if i >= to {
 				return raw
@@ -991,8 +993,12 @@ func (tr *Trie) matchDualTable16(input []byte, buf *matchBuf) {
 
 	for iA < mid && iB < inputLen {
 		// Lane A: one step — a whole root gap skip, or one transition.
+		// The gap search is bounded to lane A's half: a root gap
+		// carries no automaton state, so bytes at or past mid are lane
+		// B's alone (unbounded, a gap crossing mid would scan lane B's
+		// half twice); see matchDualStopByte16.
 		if sA == rootState && tr.rootStop[input[iA]] == 0 {
-			iA = tr.skipRootTable(input, iA)
+			iA = tr.skipRootTable(input[:mid], iA)
 		} else {
 			v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sA)<<9+uintptr(input[iA])<<1)))
 			sA = v &^ (1 << 15)
@@ -1051,8 +1057,10 @@ func (tr *Trie) matchDualTable32(input []byte, buf *matchBuf) {
 	rawA, rawB := buf.raw, buf.raw2
 
 	for iA < mid && iB < inputLen {
+		// Lane A's gap search is bounded to its half; see
+		// matchDualTable16.
 		if sA == rootState && tr.rootStop[input[iA]] == 0 {
-			iA = tr.skipRootTable(input, iA)
+			iA = tr.skipRootTable(input[:mid], iA)
 		} else {
 			v := *(*uint32)(unsafe.Add(ftBase, uintptr(sA)<<10+uintptr(input[iA])<<2))
 			sA = v & stateMask

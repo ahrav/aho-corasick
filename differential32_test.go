@@ -101,6 +101,27 @@ func TestDifferential32BitPaths(t *testing.T) {
 				return input
 			},
 		},
+		{
+			// A long root gap spanning mid: rootDense still passes on
+			// the dense head/tail windows, lane A's bounded root skip
+			// stops at exactly mid, and lane B enters mid-gap and skips
+			// to the gap's far edge — the lane-boundary geometry the
+			// other fixtures never produce.
+			"multi-stop-midgap",
+			[]string{"ab", "bc", "ca", "abc", "cab", "bbb"},
+			func(n int) []byte {
+				input := make([]byte, n)
+				for i := range input {
+					input[i] = byte('a' + rng.Intn(3))
+				}
+				if n >= 1024 {
+					for i := n/2 - 200; i < n/2+200; i++ {
+						input[i] = 'z'
+					}
+				}
+				return input
+			},
+		},
 	}
 
 	sizes := []int{0, 1, 100, 1000, 4096, 5000, 8191, 20000, 80000}
