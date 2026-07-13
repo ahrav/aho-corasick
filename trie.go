@@ -466,6 +466,12 @@ const dualDenseThreshold = 410
 // tail) and reports whether the stop-byte density is high enough for the
 // dual-cursor scan to pay. Costs three vectorized bytes.Count calls,
 // noise against a scan that touches every byte.
+//
+// Stop-byte density is a proxy for excursion *starts*, not for bytes
+// spent inside excursions, so it under-reports the in-chain share when
+// patterns are long: input following 100-byte patterns sits near 1%
+// density while nearly every byte is a serial transition load. chainHeavy
+// is the second gate that catches that regime.
 func looksDense(input []byte, c byte) bool {
 	n := len(input)
 	if n <= 4096 {
@@ -478,15 +484,80 @@ func looksDense(input []byte, c byte) bool {
 	return k*4 >= dualDenseThreshold*3
 }
 
+// dualChainSkipMax is the maximum number of root-skippable bytes, out of
+// the 3KB chainHeavy samples, for the input to still count as
+// chain-heavy (in-chain occupancy >= 7/8). Calibrated on the same
+// workloads as dualDenseThreshold plus concatenated long patterns:
+// word-plus-filler mixtures that favor the single cursor sample at
+// <= 0.79 occupancy, concatenated dictionary words at >= 0.91, and
+// concatenated 32-100 byte patterns (~1-3% stop-byte density, dual wins
+// ~1.8-2x, measured on Neoverse) at >= 0.98. Natural text samples at
+// ~0.10 and exhausts the budget within the first window.
+const dualChainSkipMax = 384
+
+// chainHeavy samples three 1KB windows of input (head, middle, tail) by
+// walking the automaton the same way the scan loop does, and reports
+// whether at most dualChainSkipMax of the sampled bytes were root
+// self-loop skips. It exits early once the skip budget is spent, so
+// skip-friendly inputs (the ones that should stay on the single-cursor
+// path) pay a few IndexByte hops; the full 3KB transition walk is only
+// paid on chain-heavy inputs, where routing to the dual scan recovers
+// orders of magnitude more than the sample costs. Inputs of <= 4KB skip
+// the check: at that size a 3KB walk cancels the dual win.
+func (tr *Trie) chainHeavy(input []byte) bool {
+	n := len(input)
+	if n <= 4096 {
+		return false
+	}
+	mid := n / 2
+	budget := dualChainSkipMax
+	for _, w := range [3][]byte{input[:1024], input[mid : mid+1024], input[n-1024:]} {
+		var ok bool
+		budget, ok = tr.chainWalk(w, budget)
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// chainWalk walks one sample window, decrementing budget for every byte
+// covered by a root self-loop skip. It returns the remaining budget and
+// false as soon as the budget goes negative.
+func (tr *Trie) chainWalk(w []byte, budget int) (int, bool) {
+	c := tr.rootStopBytes[0]
+	s := uint32(rootState)
+	for i := 0; i < len(w); i++ {
+		if s == rootState && w[i] != c {
+			j := bytes.IndexByte(w[i:], c)
+			if j < 0 {
+				j = len(w) - i
+			}
+			budget -= j
+			if budget < 0 {
+				return 0, false
+			}
+			i += j
+			if i >= len(w) {
+				break
+			}
+		}
+		v := tr.failTrans16[int(s)<<8+int(w[i])]
+		s = uint32(v) &^ (1 << 15)
+	}
+	return budget, true
+}
+
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
 		// Dual-scan only when the maxLen-1 bytes lane B re-scans are a
-		// small fraction of a half, and the input is dense enough in
-		// stop bytes that overlapping two transition chains beats the
-		// single-cursor loop's inline root skip.
+		// small fraction of a half, and the input either is dense enough
+		// in stop bytes or keeps the automaton in-chain nearly everywhere,
+		// so overlapping two transition chains beats the single-cursor
+		// loop's inline root skip.
 		if len(input) >= dualThreshold && int(tr.maxLen)*4 < len(input)/2 &&
-			looksDense(input, tr.rootStopBytes[0]) {
+			(looksDense(input, tr.rootStopBytes[0]) || tr.chainHeavy(input)) {
 			tr.matchDualStopByte16(input, buf)
 			return
 		}
