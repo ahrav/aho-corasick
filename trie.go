@@ -609,9 +609,9 @@ func (tr *Trie) walkTable16(input []byte, fn WalkFn) {
 // single byte value: the root skip is an inlined SWAR word scan with a
 // vectorized bytes.IndexByte fallback for long gaps.
 func (tr *Trie) walkStopByte(input []byte, fn WalkFn) {
-	failTrans := tr.failTrans
-	dictPat := tr.dictPat
-	dictLink := tr.dictLink
+	ftBase := unsafe.Pointer(&tr.failTrans[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
 
 	c := tr.rootStopBytes[0]
 	cc := uint64(c) * swarOnes
@@ -653,14 +653,14 @@ func (tr *Trie) walkStopByte(input []byte, fn WalkFn) {
 			}
 		}
 
-		v := failTrans[s][input[i]]
+		v := *(*uint32)(unsafe.Add(ftBase, uintptr(s)<<10+uintptr(input[i])<<2))
 		s = v & stateMask
 		if v&outputFlag != 0 {
-			if dp := dictPat[s]; uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 				return
 			}
-			for u := dictLink[s]; u != nilState; u = dictLink[u] {
-				dp := dictPat[u]
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				dp := *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3))
 				if !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 					return
 				}
@@ -672,9 +672,9 @@ func (tr *Trie) walkStopByte(input []byte, fn WalkFn) {
 // walkTable is Walk for tries with several root stop bytes, using the
 // rootStop table to skip root self-loops.
 func (tr *Trie) walkTable(input []byte, fn WalkFn) {
-	failTrans := tr.failTrans
-	dictPat := tr.dictPat
-	dictLink := tr.dictLink
+	ftBase := unsafe.Pointer(&tr.failTrans[0])
+	dpBase := unsafe.Pointer(&tr.dictPat[0])
+	dlBase := unsafe.Pointer(&tr.dictLink[0])
 
 	s := rootState
 
@@ -708,14 +708,14 @@ func (tr *Trie) walkTable(input []byte, fn WalkFn) {
 			}
 		}
 
-		v := failTrans[s][input[i]]
+		v := *(*uint32)(unsafe.Add(ftBase, uintptr(s)<<10+uintptr(input[i])<<2))
 		s = v & stateMask
 		if v&outputFlag != 0 {
-			if dp := dictPat[s]; uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
+			if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(s)<<3)); uint32(dp) != 0 && !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 				return
 			}
-			for u := dictLink[s]; u != nilState; u = dictLink[u] {
-				dp := dictPat[u]
+			for u := *(*uint32)(unsafe.Add(dlBase, uintptr(s)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+				dp := *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3))
 				if !fn(uint32(i), uint32(dp), uint32(dp>>32)) {
 					return
 				}
