@@ -67,3 +67,81 @@ func TestDPEquivalence(t *testing.T) {
 		}
 	}
 }
+
+// buildBoundaryTrie builds a trie with exactly numStates states out of
+// two-byte patterns. Patterns [hi, lo] for consecutive integers produce
+// 2 bookkeeping states (state 0 and the root) + one state per distinct
+// first byte + one state per pattern, giving exact control of the count.
+func buildBoundaryTrie(t *testing.T, numStates int) *Trie {
+	t.Helper()
+	// Grow pattern count until the state arithmetic lands exactly:
+	// states = 2 + first-byte groups + patterns.
+	patterns := 0
+	groups := 0
+	for 2+groups+patterns < numStates {
+		if patterns == groups*256 { // start a new group
+			groups++
+		}
+		patterns++
+	}
+	pats := make([][]byte, 0, patterns)
+	for i := 0; i < patterns; i++ {
+		pats = append(pats, []byte{byte(i >> 8), byte(i)})
+	}
+	tr := NewTrieBuilder().AddPatterns(pats).Build()
+	if got := len(tr.failTrans); got != numStates {
+		t.Fatalf("fixture built %d states, want %d", got, numStates)
+	}
+	return tr
+}
+
+// TestFailTrans16Cutoff pins the half-width table's size gate at the DP
+// builder's 2^15-state boundary: exactly 2^15 states must build the
+// table (and pack the highest 15-bit state id and the bit-15 output flag
+// without truncation), while one state more must leave it nil.
+func TestFailTrans16Cutoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boundary fixtures allocate ~40MB of table")
+	}
+
+	t.Run("at limit", func(t *testing.T) {
+		tr := buildBoundaryTrie(t, 1<<15)
+		if tr.failTrans16 == nil {
+			t.Fatalf("failTrans16 nil at exactly 2^15 states, want built")
+		}
+		// The highest BFS id is a pattern-terminal (emitting) state:
+		// its packed entry must carry all 15 state bits and the flag.
+		maxState := uint32(1<<15 - 1)
+		var found bool
+		for s := 0; s < len(tr.failTrans) && !found; s++ {
+			for b := 0; b < 256; b++ {
+				v := tr.failTrans[s][b]
+				if v&stateMask != maxState {
+					continue
+				}
+				found = true
+				if v&outputFlag == 0 {
+					t.Fatalf("state %#x reached from (%d,%#x) lost its output flag in failTrans", maxState, s, b)
+				}
+				w := tr.failTrans16[s<<8+b]
+				if uint32(w&(1<<15-1)) != maxState {
+					t.Fatalf("failTrans16 truncated max state: got %#x want %#x", w&(1<<15-1), maxState)
+				}
+				if w&(1<<15) == 0 {
+					t.Fatalf("failTrans16 dropped the output flag on max state entry %#x", w)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("no transition targets max state %#x; fixture invalid", maxState)
+		}
+	})
+
+	t.Run("one past limit", func(t *testing.T) {
+		tr := buildBoundaryTrie(t, 1<<15+1)
+		if tr.failTrans16 != nil {
+			t.Fatalf("failTrans16 built for %d states, want nil above the 2^15 limit", 1<<15+1)
+		}
+	})
+}
