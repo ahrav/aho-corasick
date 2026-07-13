@@ -462,6 +462,15 @@ const dualThreshold = 1024
 // cursor.
 const dualDenseThreshold = 410
 
+// sampleWindows returns the three 1KB windows (head, middle, tail) that
+// the dispatch heuristics sample. looksDense and chainHeavy were
+// calibrated on the same windows, so both must sample identically; the
+// caller guarantees len(input) > 4096.
+func sampleWindows(input []byte) [3][]byte {
+	mid := len(input) / 2
+	return [3][]byte{input[:1024], input[mid : mid+1024], input[len(input)-1024:]}
+}
+
 // looksDense samples up to three 1KB windows of input (head, middle,
 // tail) and reports whether the stop-byte density is high enough for the
 // dual-cursor scan to pay. Costs three vectorized bytes.Count calls,
@@ -477,10 +486,10 @@ func looksDense(input []byte, c byte) bool {
 	if n <= 4096 {
 		return bytes.Count(input, []byte{c})*4096 >= dualDenseThreshold*n
 	}
-	k := bytes.Count(input[:1024], []byte{c})
-	mid := n / 2
-	k += bytes.Count(input[mid:mid+1024], []byte{c})
-	k += bytes.Count(input[n-1024:], []byte{c})
+	k := 0
+	for _, w := range sampleWindows(input) {
+		k += bytes.Count(w, []byte{c})
+	}
 	return k*4 >= dualDenseThreshold*3
 }
 
@@ -518,9 +527,8 @@ func (tr *Trie) chainHeavy(input []byte) bool {
 	if n <= 4096 {
 		return false
 	}
-	mid := n / 2
 	skips, counted := 0, 0
-	for _, w := range [3][]byte{input[:1024], input[mid : mid+1024], input[n-1024:]} {
+	for _, w := range sampleWindows(input) {
 		var ok bool
 		skips, counted, ok = tr.chainWalk(w, skips, counted)
 		if !ok {

@@ -121,7 +121,14 @@ func TestChainHeavyMidChainWindows(t *testing.T) {
 func TestDifferentialLongPatternDual(t *testing.T) {
 	pats := buildLongPatterns(64, 100)
 	tr := buildStopByte16Trie(t, pats)
-	in := concat(pats, 32<<10)
+	// Sized inside the serial window: big enough for chainHeavy's 4KB
+	// floor, below Match's 2*parallelChunk parallel dispatch, so the
+	// scan is guaranteed to go matchSeq -> chainHeavy -> dual-cursor
+	// regardless of GOMAXPROCS.
+	in := concat(pats, 12<<10)
+	if len(in) >= 2*parallelChunk {
+		t.Fatal("test setup: input must stay below the parallel dispatch threshold")
+	}
 	if !tr.chainHeavy(in) {
 		t.Fatal("test setup: input must take the chain-heavy dual path")
 	}
