@@ -223,6 +223,10 @@ func (tr *Trie) matchSingle(input []byte, buf *matchBuf) {
 			buf.raw = append(buf.raw, uint64(i), dp)
 		}
 	}
+	if hasPairKernel {
+		tr.singleKernelMatch(input, buf)
+		return
+	}
 	if tr.singlePairDense(input) {
 		tr.singlePairMatch(input, buf)
 		return
@@ -245,6 +249,10 @@ func (tr *Trie) walkSingle(input []byte, fn WalkFn) {
 				return
 			}
 		}
+	}
+	if hasPairKernel {
+		tr.singleKernelWalk(input, fn)
+		return
 	}
 	if tr.singlePairDense(input) {
 		tr.singlePairWalk(input, fn)
@@ -311,6 +319,12 @@ func (tr *Trie) singleRareWalk(input []byte, fn WalkFn) {
 // their offsets simultaneously, eight candidate starts per iteration.
 // Requires len(tr.single) >= 2.
 func (tr *Trie) singlePairMatch(input []byte, buf *matchBuf) {
+	tr.singlePairMatchFrom(input, 0, buf)
+}
+
+// singlePairMatchFrom is singlePairMatch starting at position from; the
+// kernel path hands over here when the candidate stream turns out dense.
+func (tr *Trie) singlePairMatchFrom(input []byte, from int, buf *matchBuf) {
 	p := tr.single
 	n := len(p)
 	oa, ob := tr.singleO1, tr.singleO2
@@ -322,8 +336,8 @@ func (tr *Trie) singlePairMatch(input []byte, buf *matchBuf) {
 	dp := tr.singleDP
 
 	limit := len(input) - n // last valid start
-	next := 0               // next start allowed by the KMP period
-	i := 0
+	next := from            // next start allowed by the KMP period
+	i := from
 	// Two independent 8-byte lanes per iteration: the lanes share no
 	// data, so their load-xor-test chains overlap and the common no-hit
 	// case takes one branch per 16 bytes. Lane 0 hits precede lane 1
@@ -377,6 +391,11 @@ func (tr *Trie) singlePairMatch(input []byte, buf *matchBuf) {
 
 // singlePairWalk is singlePairMatch for the callback API.
 func (tr *Trie) singlePairWalk(input []byte, fn WalkFn) {
+	tr.singlePairWalkFrom(input, 0, fn)
+}
+
+// singlePairWalkFrom is singlePairWalk starting at position from.
+func (tr *Trie) singlePairWalkFrom(input []byte, from int, fn WalkFn) {
 	p := tr.single
 	n := len(p)
 	oa, ob := tr.singleO1, tr.singleO2
@@ -388,8 +407,8 @@ func (tr *Trie) singlePairWalk(input []byte, fn WalkFn) {
 	dp := tr.singleDP
 
 	limit := len(input) - n
-	next := 0
-	i := 0
+	next := from
+	i := from
 	// Same two-lane structure as singlePairMatch.
 	for ; i+ob+16 <= len(input); i += 16 {
 		wA := input[i+oa : i+oa+16]
@@ -444,4 +463,105 @@ func (tr *Trie) singlePairWalk(input []byte, fn WalkFn) {
 // is zero.
 func swarZero(w uint64) uint64 {
 	return (w - swarOnes) &^ w & swarHighs
+}
+
+// singleKernelMatch finds occurrences with the vector pair kernel: one
+// call scans whole 32-position blocks for candidates (both rare bytes at
+// their offsets), so neither the candidate-restart cost of the rare-byte
+// strategy nor the flat scalar throughput of the SWAR pair scan applies.
+// Only called when hasPairKernel.
+//
+// Position mapping: pattern start s puts the low-offset filter byte at
+// input[s+oa], so the kernel scans input[oa:] and its index j IS the
+// candidate start. Read contract: the kernel touches at most
+// input[oa : oa + (limit+1)&^31 + (ob-oa)], which stays inside input
+// because ob <= n-1 and limit = len(input)-n.
+func (tr *Trie) singleKernelMatch(input []byte, buf *matchBuf) {
+	p := tr.single
+	n := len(p)
+	oa, ob := tr.singleO1, tr.singleO2
+	if oa > ob {
+		oa, ob = ob, oa
+	}
+	a, b := p[oa], p[ob]
+	d := ob - oa
+	dp := tr.singleDP
+	limit := len(input) - n // last valid start
+	s := 0
+	candidates := 0
+	for s <= limit {
+		// Adaptive bailout: each kernel return costs a call restart
+		// (~17ns), so a pair-dense stream (>1 candidate per 64 bytes,
+		// after a 32-candidate grace) is better served by the SWAR
+		// scan with inline candidate handling. Bounded regret: at
+		// most ~2KB scanned the slow way before switching.
+		if candidates++; candidates > 32 && candidates*64 > s {
+			tr.singlePairMatchFrom(input, s, buf)
+			return
+		}
+		m := limit - s + 1 // candidate starts remaining
+		j := indexPair2(input[s+oa:], m, a, b, d)
+		if j < 0 {
+			// Scalar tail over the last partial block.
+			for t := s + m&^31; t <= limit; t++ {
+				if input[t+oa] == a && input[t+ob] == b && singleVerify(input, t, p) {
+					buf.raw = append(buf.raw, uint64(t+n-1), dp)
+					t += tr.singleSkip - 1
+				}
+			}
+			return
+		}
+		cand := s + j
+		if singleVerify(input, cand, p) {
+			buf.raw = append(buf.raw, uint64(cand+n-1), dp)
+			s = cand + tr.singleSkip
+		} else {
+			s = cand + 1
+		}
+	}
+}
+
+// singleKernelWalk is singleKernelMatch for the callback API.
+func (tr *Trie) singleKernelWalk(input []byte, fn WalkFn) {
+	p := tr.single
+	n := len(p)
+	oa, ob := tr.singleO1, tr.singleO2
+	if oa > ob {
+		oa, ob = ob, oa
+	}
+	a, b := p[oa], p[ob]
+	d := ob - oa
+	dp := tr.singleDP
+	limit := len(input) - n
+	s := 0
+	candidates := 0
+	for s <= limit {
+		// See singleKernelMatch for the adaptive bailout.
+		if candidates++; candidates > 32 && candidates*64 > s {
+			tr.singlePairWalkFrom(input, s, fn)
+			return
+		}
+		m := limit - s + 1
+		j := indexPair2(input[s+oa:], m, a, b, d)
+		if j < 0 {
+			for t := s + m&^31; t <= limit; t++ {
+				if input[t+oa] == a && input[t+ob] == b && singleVerify(input, t, p) {
+					if !fn(uint32(t+n-1), uint32(dp), uint32(dp>>32)) {
+						return
+					}
+					t += tr.singleSkip - 1
+				}
+			}
+			return
+		}
+		cand := s + j
+		if singleVerify(input, cand, p) {
+			if !fn(uint32(cand+n-1), uint32(dp), uint32(dp>>32)) {
+				return
+			}
+			s = cand + tr.singleSkip
+		} else {
+			s = cand + 1
+		}
+	}
 }

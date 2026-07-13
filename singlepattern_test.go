@@ -244,3 +244,43 @@ func TestSingleWalkStrategiesStop(t *testing.T) {
 		}
 	}
 }
+
+// TestSingleLargeInputs exercises the large-input single-pattern paths
+// end-to-end (on arm64 the vector kernel and its adaptive handover to
+// the SWAR scan; elsewhere the sampled strategies) against the naive
+// reference: sparse prose-like input, pair-dense periodic input that
+// forces the mid-stream switch, and a hit landing in the scalar tail
+// after the last full block.
+func TestSingleLargeInputs(t *testing.T) {
+	rng := rand.New(rand.NewSource(1234))
+	for _, pattern := range []string{"ab", "aba", "Hedvig", "imorges"} {
+		tr := NewTrieBuilder().AddString(pattern).Build()
+
+		// Sparse: 64KB filler with occasional plants.
+		sparse := make([]byte, 64<<10)
+		for i := range sparse {
+			sparse[i] = byte(' ' + rng.Intn(90))
+		}
+		for k := 0; k < 40; k++ {
+			copy(sparse[rng.Intn(len(sparse)-len(pattern)):], pattern)
+		}
+		// Tail hit: plant in the final partial block.
+		copy(sparse[len(sparse)-len(pattern)-3:], pattern)
+
+		// Dense: the pattern repeated back-to-back (maximum overlap and
+		// candidate density; trips the kernel's adaptive bailout).
+		dense := bytes.Repeat([]byte(pattern), (32<<10)/len(pattern))
+
+		for name, input := range map[string][]byte{"sparse": sparse, "dense": dense} {
+			want := naiveMatch([]string{pattern}, input)
+			ms := tr.Match(input)
+			if d := diffTriples(triplesFromMatches(ms), want); d != -1 {
+				t.Fatalf("%q/%s: Match diverges from reference at %d", pattern, name, d)
+			}
+			tr.ReleaseMatches(ms)
+			if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
+				t.Fatalf("%q/%s: Walk diverges from reference at %d", pattern, name, d)
+			}
+		}
+	}
+}
