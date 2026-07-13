@@ -493,105 +493,166 @@ func looksDense(input []byte, c byte) bool {
 	return k*4 >= dualDenseThreshold*3
 }
 
-// dualChainSkipMax is the maximum number of root-skippable bytes, out of
-// the 3KB chainHeavy sample, for the input to still count as chain-heavy
-// (in-chain occupancy >= 7/8 of the sampled bytes). Calibrated on the
-// same workloads as dualDenseThreshold plus concatenated long patterns:
-// word-plus-filler mixtures that favor the single cursor sample at
-// <= 0.79 occupancy, concatenated dictionary words at >= 0.91, and
-// concatenated 32-2048 byte patterns (~0.05-3% stop-byte density, dual
-// wins ~1.8-2x, measured on Neoverse) at >= 0.98. Natural text samples
-// at ~0.10 and exhausts the budget within the first window.
-const dualChainSkipMax = 384
+// The dual-cursor scan pays when the automaton's serial transition
+// chains (excursions) are long: each in-chain step is a dependent load,
+// and a single cursor exposes that full latency chain while two cursors
+// overlap two of them. Short excursions do not need the second cursor -
+// the out-of-order window already overlaps successive short chains
+// across the root skips between them - so the routing signal is the
+// MEAN EXCURSION LENGTH of the input on this automaton, measured by
+// chainSample. Measured on Neoverse at 96KB: word-like inputs (mean
+// chain 9-13 bytes) favor the single cursor by 1.1-1.4x at every
+// density and occupancy tried, while 32+-byte chains favor the dual
+// scan by 1.4-2x even at 24% occupancy. Between those bands the winner
+// is workload- and machine-dependent, so the gray zone defers to the
+// stop-byte-density calibration (dualDenseThreshold, measured on Zen 4).
+const (
+	// dualChainLongMin: mean sampled excursion length at or above which
+	// the dual scan wins regardless of density (shortest measured dual
+	// winner: 33-byte chains at 1.4-1.6x; word-like single winners sit
+	// at <= 13).
+	dualChainLongMin = 24
+	// dualChainShortMax: mean sampled excursion length below which the
+	// single cursor wins regardless of density (false-start inputs -
+	// stop byte frequent but chains dying at depth ~2 - measure 1.4x in
+	// favor of the single cursor; the shortest dense dual winners are
+	// word-like at >= 11).
+	dualChainShortMax = 6
+	// Sampling stops once this many chain bytes or excursions have been
+	// observed: the mean is stable by then, and the caps bound the
+	// sample cost on chain-dense inputs to ~512 table loads regardless
+	// of input size.
+	dualSampleMaxSteps      = 512
+	dualSampleMaxExcursions = 48
+	// Minimum evidence for a decisive verdict. The long verdict claims
+	// chains are long and is witnessed by chain-byte mass; the short
+	// verdict claims chains die young and needs enough distinct
+	// excursions to say so. Below these the windows mostly missed the
+	// input's excursions and the gray-zone density verdict stands.
+	dualSampleMinChainBytes = 128
+	dualSampleMinExcursions = 16
+)
 
-// chainHeavy samples three 1KB windows of input (head, middle, tail) by
-// walking the automaton the same way the scan loop does, and reports
-// whether root self-loop skips are at most dualChainSkipMax (1/8) of the
-// 3KB sample. It exits early once the skip budget is spent, so
-// skip-friendly inputs (the ones that should stay on the single-cursor
-// path) pay a few IndexByte hops; the full transition walk is only paid
-// on chain-heavy inputs, where routing to the dual scan recovers orders
-// of magnitude more than the sample costs.
-//
-// A window usually starts mid-excursion, where the real scan's state is
-// unknown, so each walk warms up from maxLen-1 bytes before its window:
-// the automaton state at any position is the longest pattern prefix
-// suffixing the input there, at most maxLen bytes, so a walk from root
-// through the warm-up reaches the window's first byte in the exact state
-// the real scan holds there (the same replay matchParallel relies on for
-// its lane starts). Warm-up bytes shift state but are not counted;
-// skipped bytes are counted at their positions inside the window, so the
-// verdict reflects true per-byte occupancy of the sampled kilobytes with
-// no ambiguity exclusions. The head window starts at maxLen-1 for a full
-// warm-up (n > 4096 > 8*maxLen by the dispatch guard keeps that inside
-// the first half; its own pre-window bytes are the scan's one-off
-// startup transient and intentionally not sampled).
-//
-// Inputs of <= 4096 bytes skip the check: at that size the sample is
-// most of the input, and walking it cancels the dual win.
-func (tr *Trie) chainHeavy(input []byte) bool {
-	n := len(input)
-	if n <= 4096 {
+// dualChainFloor scales the minimum input size for chain sampling: below
+// dualChainFloor*(maxLen+1024) the up-to-three warm-up replays cannot
+// pay for themselves even when the verdict is dual (the dual scan saves
+// ~45-50% of a single scan, so the sample must stay well under half the
+// input), and the gate falls back to the density verdict alone. A
+// chain-heavy input below the floor keeps the single cursor: slower than
+// the dual scan, but cheaper than buying the dual win at full sample
+// price on a small input.
+const dualChainFloor = 7
+
+// dualWorthwhile decides matchSeq's dual-vs-single routing for inputs
+// that passed the size guards. The density check is the cheap first
+// signal; when the input is big enough to sample, the measured mean
+// excursion length overrides it in the two decisive zones and defers to
+// it in the gray zone between.
+func (tr *Trie) dualWorthwhile(input []byte) bool {
+	dense := looksDense(input, tr.rootStopBytes[0])
+	if len(input) < dualChainFloor*(int(tr.maxLen)+1024) {
+		return dense
+	}
+	chainBytes, excursions := tr.chainSample(input)
+	if excursions == 0 {
+		// No chain entered the sample windows; nothing measured (the
+		// input is either skip-dominated or the windows missed its
+		// excursions), so the density verdict stands.
+		return dense
+	}
+	if chainBytes >= dualSampleMinChainBytes && chainBytes >= dualChainLongMin*excursions {
+		return true
+	}
+	if excursions >= dualSampleMinExcursions && chainBytes < dualChainShortMax*excursions {
 		return false
 	}
-	warm := int(tr.maxLen) - 1
+	return dense
+}
+
+// chainSample walks up to three 1KB windows of input (head, middle,
+// tail) the same way the scan loop does and returns the number of
+// in-chain (table-step) bytes and the number of excursions (maximal
+// in-chain runs) they contain, stopping early at the dualSampleMax caps.
+// Skip-dominated windows cost a few IndexByte hops; chain-dense windows
+// cost table loads, bounded by the caps.
+//
+// A window usually starts mid-excursion, where the real scan's state is
+// unknown, so each walk warms up from maxLen bytes before its window:
+// the automaton state at any position is the longest pattern prefix
+// suffixing the input there, at most maxLen bytes long, so a walk from
+// root through the warm-up reaches the window's first byte in the exact
+// state the real scan holds there (the replay matchParallel relies on
+// for its lane starts). Warm-up bytes shift state but are not counted;
+// the head window starts at maxLen for a full warm-up (the
+// dualChainFloor gate keeps that inside the first half; its own
+// pre-window bytes are the scan's one-off startup transient and
+// intentionally not sampled).
+func (tr *Trie) chainSample(input []byte) (chainBytes, excursions int) {
+	n := len(input)
+	warm := int(tr.maxLen)
 	mid := n / 2
-	budget := dualChainSkipMax
 	for _, start := range [3]int{warm, mid, n - 1024} {
-		var ok bool
-		budget, ok = tr.chainWalk(input[max(start-warm, 0):min(start+1024, n)], warm, budget)
-		if !ok {
-			return false
+		chainBytes, excursions = tr.chainWalk(
+			input[max(start-warm, 0):min(start+1024, n)], warm, chainBytes, excursions)
+		if chainBytes >= dualSampleMaxSteps || excursions >= dualSampleMaxExcursions {
+			return
 		}
 	}
-	return true
+	return
 }
 
 // chainWalk walks one sample window preceded by its warm-up prefix of
-// length warm (clamped by the caller at input start), decrementing
-// budget for every root-skippable byte at or beyond the window start.
-// It returns the remaining budget and false as soon as the budget goes
-// negative. Warm-up bytes drive the automaton but are never charged.
-func (tr *Trie) chainWalk(w []byte, warm int, budget int) (int, bool) {
+// length warm (clamped by the caller at input start), accumulating
+// in-chain bytes and excursions observed at or beyond the window start.
+// An excursion already in progress at the warm-up boundary counts once,
+// so a window wholly inside one long excursion still yields evidence.
+// The walk returns early once either dualSampleMax cap is reached.
+func (tr *Trie) chainWalk(w []byte, warm, chainBytes, excursions int) (int, int) {
 	if warm >= len(w) {
-		return budget, true
+		return chainBytes, excursions
 	}
 	c := tr.rootStopBytes[0]
 	s := rootState
+	// runCounted marks the current excursion as already tallied; it
+	// resets whenever the automaton returns to root.
+	runCounted := false
 	for i := 0; i < len(w); i++ {
 		if s == rootState && w[i] != c {
 			k := bytes.IndexByte(w[i:], c)
 			if k < 0 {
-				k = len(w) - i
-			}
-			// Only the skipped bytes inside the window proper count.
-			if end := i + k; end > warm {
-				budget -= end - max(i, warm)
-				if budget < 0 {
-					return 0, false
-				}
+				return chainBytes, excursions
 			}
 			i += k
-			if i >= len(w) {
-				break
-			}
 		}
 		v := tr.failTrans16[int(s)<<8+int(w[i])]
 		s = uint32(v) &^ (1 << 15)
+		if i >= warm {
+			chainBytes++
+			if !runCounted {
+				excursions++
+				runCounted = true
+			}
+			if chainBytes >= dualSampleMaxSteps || excursions >= dualSampleMaxExcursions {
+				return chainBytes, excursions
+			}
+		}
+		if s == rootState {
+			runCounted = false
+		}
 	}
-	return budget, true
+	return chainBytes, excursions
 }
 
 // matchSeq scans input sequentially into buf.
 func (tr *Trie) matchSeq(input []byte, buf *matchBuf) {
 	if tr.failTrans16 != nil && len(tr.rootStopBytes) == 1 {
 		// Dual-scan only when the maxLen-1 bytes lane B re-scans are a
-		// small fraction of a half, and the input either is dense enough
-		// in stop bytes or keeps the automaton in-chain nearly everywhere,
-		// so overlapping two transition chains beats the single-cursor
-		// loop's inline root skip.
+		// small fraction of a half, and the input's excursion shape
+		// (sampled mean chain length, with stop-byte density as the
+		// fallback signal) says overlapping two transition chains beats
+		// the single-cursor loop's inline root skip.
 		if len(input) >= dualThreshold && int(tr.maxLen)*4 < len(input)/2 &&
-			(looksDense(input, tr.rootStopBytes[0]) || tr.chainHeavy(input)) {
+			tr.dualWorthwhile(input) {
 			tr.matchDualStopByte16(input, buf)
 			return
 		}
