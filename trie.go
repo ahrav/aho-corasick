@@ -838,6 +838,11 @@ func (tr *Trie) parallelWorkers(input []byte, maxProcs int) int {
 // denseKnown): the sample costs three vectorized bytes.Count calls, and
 // the sequential dual-cursor gate wants the same signal, so a sequential
 // verdict hands it down instead of sampling the input twice.
+//
+// The two sampled return sites are asymmetric: a dense verdict clears
+// the sparse gate and returns p > 0, so (p=0, denseKnown=true) always
+// carries dense=false — the only sampled tuple a sequential caller ever
+// sees. (p=0, dense=true, denseKnown=true) is not a possible output.
 func (tr *Trie) parallelWorkersDense(input []byte, maxProcs int) (p int, dense, denseKnown bool) {
 	// A one-pattern trie scans with vectorized substring search at
 	// memory bandwidth (see single.go); worker goroutines and the
@@ -897,7 +902,13 @@ func (tr *Trie) parallelWorkersDense(input []byte, maxProcs int) (p int, dense, 
 func (tr *Trie) Match(input []byte) []*Match {
 	// When the parallel gate sampled stop-byte density and the scan
 	// stays sequential, its verdict is threaded to matchSeq so the
-	// dual-cursor gate does not sample the same input again.
+	// dual-cursor gate does not sample the same input again. The
+	// at-most-one-sample guarantee is therefore sequential-only: the
+	// parallel branch deliberately leaves each worker to route its own
+	// chunk (dualWorthwhileDense samples chunk-local shape, which can
+	// differ from the whole input's), so a dense-verdict dispatch pays
+	// one whole-input sample here plus up to one chunk-local sample per
+	// worker inside matchParallel.
 	p, dense, denseKnown := tr.parallelWorkersDense(input, runtime.GOMAXPROCS(0))
 	if p > 0 {
 		return tr.matchParallel(input, p)
@@ -1801,6 +1812,11 @@ func (tr *Trie) matchParallel(input []byte, p int) []*Match {
 	chunk := (len(input) + p - 1) / p
 	if overlap*4 > chunk {
 		// Overlap rescanning would dominate; not worth parallelizing.
+		// Unreachable when p comes from parallelWorkersDense, which
+		// caps p at len(input)/(overlap*4) so chunk >= overlap*4; it
+		// guards direct callers (tests inject arbitrary p), which is
+		// why the matchSeq below re-derives its own routing rather
+		// than taking a threaded density verdict.
 		p = 0
 	}
 
