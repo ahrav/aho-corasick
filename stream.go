@@ -258,5 +258,6 @@ func (dec *decoder) decode(maxStates int) (*Trie, error) {
 		}
 	}
 	trie.setStopEntry()
+	trie.buildSinglePattern()
 	return trie, nil
 }
