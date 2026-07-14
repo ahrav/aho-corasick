@@ -1075,16 +1075,46 @@ func (tr *Trie) dualWorthwhileDense(input []byte, dense, denseKnown bool) bool {
 	return dense
 }
 
-// chainSample walks four 1KB windows of input the same way the scan
-// loop does and returns how many voted long (local mean excursion
-// length >= dualChainLongMin) and how many voted short (mean <
-// dualChainShortMax); windows with too little evidence abstain. The
-// windows sit at the 1/8, 3/8, 5/8 and 7/8 points - offset from the
-// head/mid/tail windows looksDense counts - so the two signals do not
-// share blind spots: periodic filler that hides the stop bytes from one
-// set of windows still crosses the other. Skip-dominated windows cost a
-// few IndexByte hops; chain-dense windows cost table loads, bounded by
-// the per-window caps.
+// chainSampleSmallMax is the input size below which chainSample runs on
+// a reduced budget: two windows instead of four, each under halved
+// per-window caps. It equals the largest chunk matchParallel hands a
+// worker in the gate-sampled dense band (parallelSparseMin split across
+// the 8-worker cap), so every chunk of such a dispatch - and the
+// sequential inputs just above dualChainFloor - takes the reduced
+// budget, while
+// whole inputs and the >=16KB chunks of larger dispatches keep the full
+// one.
+//
+// The full budget oversamples at this scale: four 1KB windows cover a
+// third of a 12KB chunk, 8x the fraction the same code samples from a
+// whole 96KB input, and on the parallel path every worker walks that
+// budget concurrently before its chunk scan (~17us of an 8-worker
+// dispatch's critical path at 96-127KB; the sample's dependent table
+// loads run ~5x slower under 8-way LLC contention than solo). Halving
+// both caps preserves their ratio, so the byte cap still cuts a window
+// off at the same mean excursion length relative to dualChainLongMin
+// (~25.6 bytes) and the short bar keeps dualChainShortMax; both witness
+// minimums remain attainable under the halved caps, so only the
+// evidence budget shrinks. Measured on Graviton3 (n=24): dense
+// concatenated words -4.8% at 96KB and -3.3% at 127KB, sequential 12KB
+// dense -9.4%, stop-byte-dense/shallow-chain input keeps its
+// single-cursor routing at every size, and word-separator corpora at
+// the density gate's edge improve 5-6% with no vote flips.
+const chainSampleSmallMax = parallelSparseMin / 8
+
+// chainSample walks 1KB windows of input the same way the scan loop
+// does and returns how many voted long (local mean excursion length >=
+// dualChainLongMin) and how many voted short (mean <
+// dualChainShortMax); windows with too little evidence abstain. Whole
+// inputs get four windows at the 1/8, 3/8, 5/8 and 7/8 points; inputs
+// under chainSampleSmallMax (parallel chunks and just-above-floor
+// sequential inputs) get two at the 1/4 and 3/4 points under halved
+// caps. Both layouts are offset from the head/mid/tail windows
+// looksDense counts, so the two signals do not share blind spots:
+// periodic filler that hides the stop bytes from one set of windows
+// still crosses the other. Skip-dominated windows cost a few IndexByte
+// hops; chain-dense windows cost table loads, bounded by the per-window
+// caps.
 //
 // A window usually starts mid-excursion, where the real scan's state is
 // unknown, so each walk warms up from maxLen bytes before its window:
@@ -1096,9 +1126,17 @@ func (tr *Trie) dualWorthwhileDense(input []byte, dense, denseKnown bool) bool {
 func (tr *Trie) chainSample(input []byte) (long, short int) {
 	n := len(input)
 	warm := int(tr.maxLen)
-	for _, num := range [4]int{1, 3, 5, 7} {
-		start := max(num*(n/8)-512, warm)
-		chainBytes, excursions := tr.chainWalk(input[start-warm:min(start+1024, n)], warm)
+	nums := [4]int{1, 3, 5, 7}
+	wcount, den := 4, 8
+	maxSteps, maxExc := dualSampleMaxSteps, dualSampleMaxExcursions
+	if n < chainSampleSmallMax {
+		nums = [4]int{1, 3, 0, 0}
+		wcount, den = 2, 4
+		maxSteps, maxExc = dualSampleMaxSteps/2, dualSampleMaxExcursions/2
+	}
+	for _, num := range nums[:wcount] {
+		start := max(num*(n/den)-512, warm)
+		chainBytes, excursions := tr.chainWalk(input[start-warm:min(start+1024, n)], warm, maxSteps, maxExc)
 		switch {
 		case chainBytes >= dualSampleMinChainBytes && chainBytes >= dualChainLongMin*excursions:
 			long++
@@ -1114,8 +1152,9 @@ func (tr *Trie) chainSample(input []byte) (long, short int) {
 // in-chain runs) observed at or beyond the window start. An excursion
 // already in progress at the warm-up boundary counts once, so a window
 // wholly inside one long excursion still yields evidence. The walk
-// returns early once either per-window cap is reached.
-func (tr *Trie) chainWalk(w []byte, warm int) (chainBytes, excursions int) {
+// returns early once either per-window cap is reached; the caps are
+// parameters because chainSample halves them for small inputs.
+func (tr *Trie) chainWalk(w []byte, warm, maxSteps, maxExc int) (chainBytes, excursions int) {
 	c := tr.rootStopBytes[0]
 	s := rootState
 	// runCounted marks the current excursion as already tallied; it
@@ -1137,7 +1176,7 @@ func (tr *Trie) chainWalk(w []byte, warm int) (chainBytes, excursions int) {
 				excursions++
 				runCounted = true
 			}
-			if chainBytes >= dualSampleMaxSteps || excursions >= dualSampleMaxExcursions {
+			if chainBytes >= maxSteps || excursions >= maxExc {
 				return
 			}
 		}
