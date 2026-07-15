@@ -285,6 +285,47 @@ func TestSingleLargeInputs(t *testing.T) {
 	}
 }
 
+// TestSingleLongDistanceFilter drives the kernel paths with a pattern
+// whose two selected filter bytes sit more than one 32-byte block apart,
+// so the kernel's second-byte load crosses into a later block than the
+// first: candidate mapping, the per-call read bound, and the scalar tail
+// all see d > 32 through Trie-derived offsets (the direct kernel test
+// stops at d == 32 and bypasses the builder's offset selection).
+func TestSingleLongDistanceFilter(t *testing.T) {
+	// '7' (digit, rank 80) and 'Q' (uppercase, rank 85) are the two
+	// rarest bytes; every middle byte is a common lowercase letter.
+	pattern := "Q" + strings.Repeat("eta", 13) + "7"
+	tr := NewTrieBuilder().AddString(pattern).Build()
+	if tr.single == nil {
+		t.Fatal("single not detected")
+	}
+	if d := absInt(tr.singleO1 - tr.singleO2); d <= 32 {
+		t.Fatalf("filter distance %d, want > 32; offsets %d,%d",
+			d, tr.singleO1, tr.singleO2)
+	}
+
+	input := bytes.Repeat([]byte("loremipsu"), 1000) // 9KB, no 'Q'/'7'
+	// Full-block hits, including adjacent occurrences.
+	copy(input[100:], pattern)
+	copy(input[100+len(pattern):], pattern)
+	copy(input[4096:], pattern)
+	// Scalar-tail hit: the last valid start, past the final full block.
+	copy(input[len(input)-len(pattern):], pattern)
+
+	want := naiveMatch([]string{pattern}, input)
+	if len(want) != 4 {
+		t.Fatalf("reference found %d occurrences, want 4", len(want))
+	}
+	ms := tr.Match(input)
+	if d := diffTriples(triplesFromMatches(ms), want); d != -1 {
+		t.Fatalf("Match diverges from reference at %d", d)
+	}
+	tr.ReleaseMatches(ms)
+	if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
+		t.Fatalf("Walk diverges from reference at %d", d)
+	}
+}
+
 // TestSinglePatternRejectsNoncanonicalTable corrupts individual
 // transition entries of canonical single-pattern tables and asserts the
 // detector turns the fast path off: the shape checks (state count, one

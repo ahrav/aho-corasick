@@ -452,7 +452,12 @@ func (tr *Trie) singlePairMatchFrom(input []byte, from int, buf *matchBuf) {
 	// to a plain load on little-endian targets). The intersected
 	// swarZero masks can carry borrow false positives (see swarZero);
 	// singleVerifyCarry, not the mask, is the correctness boundary.
-	for ; i+ob+16 <= len(input); i += 16 {
+	// The lane loop is bounded by the last valid start (i+15 <= limit),
+	// not by len(input): a long pattern with early filter offsets would
+	// otherwise enumerate dense candidates past limit only to discard
+	// them. That bound also proves the loads in range — i+ob+15 <=
+	// limit+ob = len(input)-n+ob <= len(input)-1 since ob <= n-1.
+	for ; i+16 <= limit+1; i += 16 {
 		wA := input[i+oa : i+oa+16]
 		wB := input[i+ob : i+ob+16]
 		wa0 := binary.LittleEndian.Uint64(wA)
@@ -525,8 +530,8 @@ func (tr *Trie) singlePairWalkFrom(input []byte, start int, fn WalkFn) {
 	next := start
 	prev := -1
 	i := start
-	// Same two-lane structure as singlePairMatch.
-	for ; i+ob+16 <= len(input); i += 16 {
+	// Same two-lane structure (and lane-loop bound) as singlePairMatch.
+	for ; i+16 <= limit+1; i += 16 {
 		wA := input[i+oa : i+oa+16]
 		wB := input[i+ob : i+ob+16]
 		wa0 := binary.LittleEndian.Uint64(wA)
@@ -602,10 +607,12 @@ func swarZero(w uint64) uint64 {
 // Only called when hasPairKernel.
 //
 // Position mapping: pattern start s puts the low-offset filter byte at
-// input[s+oa], so the kernel scans input[oa:] and its index j IS the
-// candidate start. Read contract: the kernel touches at most
-// input[oa : oa + (limit+1)&^31 + (ob-oa)], which stays inside input
-// because ob <= n-1 and limit = len(input)-n.
+// input[s+oa], so each call scans input[s+oa:] and its index j offsets
+// from s. Read contract, per call: with m = limit-s+1 candidate starts
+// remaining, the kernel reads at most input[s+oa : s+oa+m&^31+(ob-oa)]
+// (see the guard-page test). Since m&^31 <= m, the exclusive end is at
+// most s+oa+(limit-s+1)+(ob-oa) = limit+ob+1 <= len(input), because
+// ob <= n-1 and limit = len(input)-n.
 func (tr *Trie) singleKernelMatch(input []byte, buf *matchBuf) {
 	p := tr.single
 	n := len(p)
@@ -619,15 +626,25 @@ func (tr *Trie) singleKernelMatch(input []byte, buf *matchBuf) {
 	limit := len(input) - n // last valid start
 	s := 0
 	candidates := 0
+	anchor := 0 // window start for the density measurement
 	for s <= limit {
 		// Adaptive bailout: each kernel return costs a call restart
-		// (~17ns), so a pair-dense stream (>1 candidate per 64 bytes,
-		// after a 32-candidate grace) is better served by the SWAR
-		// scan with inline candidate handling. Bounded regret: at
-		// most ~2KB scanned the slow way before switching.
-		if candidates++; candidates > 32 && candidates*64 > s {
-			tr.singlePairMatchFrom(input, s, buf)
-			return
+		// (~17ns), so a pair-dense stream (>1 candidate per 64 bytes)
+		// is better served by the SWAR scan with inline candidate
+		// handling. Density is measured over a tumbling window — 32
+		// candidates against the bytes covered since the window began —
+		// never against the absolute offset, so a dense region reached
+		// after a long sparse prefix still trips the switch within two
+		// windows. Bounded regret: at most ~64 restarts (~4KB scanned
+		// the slow way) before switching.
+		if candidates++; candidates > 32 {
+			if candidates*64 > s-anchor {
+				tr.singlePairMatchFrom(input, s, buf)
+				return
+			}
+			// Sparse window: restart the measurement here.
+			candidates = 0
+			anchor = s
 		}
 		m := limit - s + 1 // candidate starts remaining
 		j := indexPair2(input[s+oa:], m, a, b, d)
@@ -665,11 +682,16 @@ func (tr *Trie) singleKernelWalk(input []byte, fn WalkFn) {
 	limit := len(input) - n
 	s := 0
 	candidates := 0
+	anchor := 0
 	for s <= limit {
 		// See singleKernelMatch for the adaptive bailout.
-		if candidates++; candidates > 32 && candidates*64 > s {
-			tr.singlePairWalkFrom(input, s, fn)
-			return
+		if candidates++; candidates > 32 {
+			if candidates*64 > s-anchor {
+				tr.singlePairWalkFrom(input, s, fn)
+				return
+			}
+			candidates = 0
+			anchor = s
 		}
 		m := limit - s + 1
 		j := indexPair2(input[s+oa:], m, a, b, d)
