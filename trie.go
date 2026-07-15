@@ -533,9 +533,11 @@ func (tr *Trie) skipRootTable(input []byte, i int) int {
 }
 
 // skipRootIndex finds the next stop byte at or after i with one
-// bytes.IndexByte pass per stop value over successive 2KB windows.
+// bytes.IndexByte pass per stop value over successive 4KB windows.
 func (tr *Trie) skipRootIndex(input []byte, i int) int {
-	const window = 2048
+	// 4KB was the best balance on Graviton3 across no-match and prose;
+	// larger windows improved no-match throughput but regressed prose.
+	const window = 4096
 	inputLen := len(input)
 	for i < inputLen {
 		end := min(i+window, inputLen)
