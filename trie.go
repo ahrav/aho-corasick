@@ -1138,6 +1138,14 @@ func (tr *Trie) chainWalk(w []byte, warm int) (chainBytes, excursions int) {
 // of the whole scan.
 const dualTableMin = 4096
 
+// dualProbeBlock is the number of interleaved steps between root-gap
+// probes in the dual-cursor table loops. Large enough that the two
+// per-block probes amortize to noise on the dense inputs the gate
+// admits, small enough that a root-gap run in the unsampled bulk
+// (rootDense reads only three 256-byte windows) costs at most one
+// block of table steps per lane before the probe jumps the rest.
+const dualProbeBlock = 512
+
 // rootDenseThreshold is the minimum number of root-leaving bytes in the
 // 768 sampled by rootDense (~28%) for the dual-cursor table scan.
 // Measured on Zen 4: natural text over the multi-stop word automata
@@ -1309,36 +1317,49 @@ func (tr *Trie) matchDualTableC(input []byte, buf *matchBuf) {
 	iA, iB := 0, startB
 	rawA, rawB := buf.raw, buf.raw2
 
-	// See matchDualTable16 for why the interleaved loop has no skip.
+	// See matchDualTable16 for the no-per-step-skip rationale and the
+	// block-boundary root-gap probes.
 	for iA < mid && iB < inputLen {
-		{
-			v := *(*uint32)(unsafe.Add(ftBase, (sOffA+uintptr(classOf[input[iA]]))<<2))
-			sOffA = uintptr(v &^ 1)
-			if v&1 != 0 {
-				st := sOffA >> shift
-				if dp := *(*uint64)(unsafe.Add(dpBase, st<<3)); uint32(dp) != 0 {
-					rawA = append(rawA, uint64(iA), dp)
-				}
-				for u := *(*uint32)(unsafe.Add(dlBase, st<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
-					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
-				}
-			}
-			iA++
+		if sOffA == rootOff && tr.rootStop[input[iA]] == 0 {
+			// Lane A's gap search is bounded to its half; see
+			// matchDualTable16.
+			iA = tr.skipRootTable(input[:mid], iA)
 		}
-
-		{
-			v := *(*uint32)(unsafe.Add(ftBase, (sOffB+uintptr(classOf[input[iB]]))<<2))
-			sOffB = uintptr(v &^ 1)
-			if v&1 != 0 && iB >= mid {
-				st := sOffB >> shift
-				if dp := *(*uint64)(unsafe.Add(dpBase, st<<3)); uint32(dp) != 0 {
-					rawB = append(rawB, uint64(iB), dp)
+		if sOffB == rootOff && tr.rootStop[input[iB]] == 0 {
+			iB = tr.skipRootTable(input, iB)
+		}
+		blockA := min(iA+dualProbeBlock, mid)
+		blockB := min(iB+dualProbeBlock, inputLen)
+		for iA < blockA && iB < blockB {
+			{
+				v := *(*uint32)(unsafe.Add(ftBase, (sOffA+uintptr(classOf[input[iA]]))<<2))
+				sOffA = uintptr(v &^ 1)
+				if v&1 != 0 {
+					st := sOffA >> shift
+					if dp := *(*uint64)(unsafe.Add(dpBase, st<<3)); uint32(dp) != 0 {
+						rawA = append(rawA, uint64(iA), dp)
+					}
+					for u := *(*uint32)(unsafe.Add(dlBase, st<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+						rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+					}
 				}
-				for u := *(*uint32)(unsafe.Add(dlBase, st<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
-					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
-				}
+				iA++
 			}
-			iB++
+
+			{
+				v := *(*uint32)(unsafe.Add(ftBase, (sOffB+uintptr(classOf[input[iB]]))<<2))
+				sOffB = uintptr(v &^ 1)
+				if v&1 != 0 && iB >= mid {
+					st := sOffB >> shift
+					if dp := *(*uint64)(unsafe.Add(dpBase, st<<3)); uint32(dp) != 0 {
+						rawB = append(rawB, uint64(iB), dp)
+					}
+					for u := *(*uint32)(unsafe.Add(dlBase, st<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+						rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+					}
+				}
+				iB++
+			}
 		}
 	}
 
@@ -1419,8 +1440,9 @@ func (tr *Trie) scanRangeTable32(input []byte, i, to int, s uint32, minEmit int,
 // their serial transition-load chains overlap. Lane B starts maxLen-1
 // bytes before the midpoint and emits only matches ending at or after it
 // (see matchParallel for why that overlap suffices), so rawA followed by
-// rawB is exactly a sequential scan's output. Root gaps are skipped with
-// the rootStop table since several byte values leave the root.
+// rawB is exactly a sequential scan's output. Root gaps are skipped only
+// at block boundaries (see the loop comment below); the sequential tail
+// scanners keep their per-step skip.
 func (tr *Trie) matchDualTable16(input []byte, buf *matchBuf) {
 	ftBase := unsafe.Pointer(&tr.failTrans16[0])
 	dpBase := unsafe.Pointer(&tr.dictPat[0])
@@ -1434,42 +1456,62 @@ func (tr *Trie) matchDualTable16(input []byte, buf *matchBuf) {
 	iA, iB := 0, startB
 	rawA, rawB := buf.raw, buf.raw2
 
-	// No root-gap skip inside the interleaved loop: the rootDense gate
-	// admits only inputs whose mean root gap is a few bytes, and there
-	// the per-step root-residence check plus the skipRootTable call
-	// cost more than stepping the table through the gap (measured on
-	// Graviton3: removing the skip wins 27-65% across the admitted
-	// density range, and the win grows with density). The sequential
-	// tail scanners below keep their skip for the leftover ranges.
+	// No per-step root-gap skip inside the interleaved loop: the
+	// rootDense gate admits only inputs whose sampled windows show
+	// mean root gaps of a few bytes, and there the per-step
+	// root-residence check plus the skipRootTable call cost more than
+	// stepping the table through the gap (measured on Graviton3:
+	// removing the skip wins 27-65% across the admitted density
+	// range, and the win grows with density). But the gate samples
+	// only three 256-byte windows, so an admitted input can still
+	// hide long root-self-loop runs between them — walked per byte
+	// those cost 5-32x the skipped scan. A probe once per
+	// dualProbeBlock steps jumps a lane parked at root over the rest
+	// of its gap, bounding that cliff to one block of table steps per
+	// gap while keeping the hot block free of per-step checks. The
+	// sequential tail scanners below keep their per-step skip.
 	for iA < mid && iB < inputLen {
-		// Lane A: one transition per step.
-		{
-			v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sA)<<9+uintptr(input[iA])<<1)))
-			sA = v &^ (1 << 15)
-			if v&(1<<15) != 0 {
-				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
-					rawA = append(rawA, uint64(iA), dp)
-				}
-				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
-					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
-				}
-			}
-			iA++
+		if sA == rootState && tr.rootStop[input[iA]] == 0 {
+			// Lane A's gap search is bounded to its half: a root gap
+			// carries no automaton state, so bytes at or past mid are
+			// lane B's alone; see scanRangeTable16.
+			iA = tr.skipRootTable(input[:mid], iA)
 		}
-
-		// Lane B: same step shape.
-		{
-			v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sB)<<9+uintptr(input[iB])<<1)))
-			sB = v &^ (1 << 15)
-			if v&(1<<15) != 0 && iB >= mid {
-				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
-					rawB = append(rawB, uint64(iB), dp)
+		if sB == rootState && tr.rootStop[input[iB]] == 0 {
+			iB = tr.skipRootTable(input, iB)
+		}
+		blockA := min(iA+dualProbeBlock, mid)
+		blockB := min(iB+dualProbeBlock, inputLen)
+		for iA < blockA && iB < blockB {
+			// Lane A: one transition per step.
+			{
+				v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sA)<<9+uintptr(input[iA])<<1)))
+				sA = v &^ (1 << 15)
+				if v&(1<<15) != 0 {
+					if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
+						rawA = append(rawA, uint64(iA), dp)
+					}
+					for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+						rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+					}
 				}
-				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
-					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
-				}
+				iA++
 			}
-			iB++
+
+			// Lane B: same step shape.
+			{
+				v := uint32(*(*uint16)(unsafe.Add(ftBase, uintptr(sB)<<9+uintptr(input[iB])<<1)))
+				sB = v &^ (1 << 15)
+				if v&(1<<15) != 0 && iB >= mid {
+					if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
+						rawB = append(rawB, uint64(iB), dp)
+					}
+					for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+						rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+					}
+				}
+				iB++
+			}
 		}
 	}
 
@@ -1498,34 +1540,47 @@ func (tr *Trie) matchDualTable32(input []byte, buf *matchBuf) {
 	iA, iB := 0, startB
 	rawA, rawB := buf.raw, buf.raw2
 
-	// See matchDualTable16 for why the interleaved loop has no skip.
+	// See matchDualTable16 for the no-per-step-skip rationale and the
+	// block-boundary root-gap probes.
 	for iA < mid && iB < inputLen {
-		{
-			v := *(*uint32)(unsafe.Add(ftBase, uintptr(sA)<<10+uintptr(input[iA])<<2))
-			sA = v & stateMask
-			if v&outputFlag != 0 {
-				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
-					rawA = append(rawA, uint64(iA), dp)
-				}
-				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
-					rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
-				}
-			}
-			iA++
+		if sA == rootState && tr.rootStop[input[iA]] == 0 {
+			// Lane A's gap search is bounded to its half; see
+			// matchDualTable16.
+			iA = tr.skipRootTable(input[:mid], iA)
 		}
-
-		{
-			v := *(*uint32)(unsafe.Add(ftBase, uintptr(sB)<<10+uintptr(input[iB])<<2))
-			sB = v & stateMask
-			if v&outputFlag != 0 && iB >= mid {
-				if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
-					rawB = append(rawB, uint64(iB), dp)
+		if sB == rootState && tr.rootStop[input[iB]] == 0 {
+			iB = tr.skipRootTable(input, iB)
+		}
+		blockA := min(iA+dualProbeBlock, mid)
+		blockB := min(iB+dualProbeBlock, inputLen)
+		for iA < blockA && iB < blockB {
+			{
+				v := *(*uint32)(unsafe.Add(ftBase, uintptr(sA)<<10+uintptr(input[iA])<<2))
+				sA = v & stateMask
+				if v&outputFlag != 0 {
+					if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sA)<<3)); uint32(dp) != 0 {
+						rawA = append(rawA, uint64(iA), dp)
+					}
+					for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sA)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+						rawA = append(rawA, uint64(iA), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+					}
 				}
-				for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
-					rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
-				}
+				iA++
 			}
-			iB++
+
+			{
+				v := *(*uint32)(unsafe.Add(ftBase, uintptr(sB)<<10+uintptr(input[iB])<<2))
+				sB = v & stateMask
+				if v&outputFlag != 0 && iB >= mid {
+					if dp := *(*uint64)(unsafe.Add(dpBase, uintptr(sB)<<3)); uint32(dp) != 0 {
+						rawB = append(rawB, uint64(iB), dp)
+					}
+					for u := *(*uint32)(unsafe.Add(dlBase, uintptr(sB)<<2)); u != nilState; u = *(*uint32)(unsafe.Add(dlBase, uintptr(u)<<2)) {
+						rawB = append(rawB, uint64(iB), *(*uint64)(unsafe.Add(dpBase, uintptr(u)<<3)))
+					}
+				}
+				iB++
+			}
 		}
 	}
 
