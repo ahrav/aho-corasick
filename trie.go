@@ -1079,11 +1079,16 @@ func (tr *Trie) dualWorthwhileDense(input []byte, dense, denseKnown bool) bool {
 // a reduced budget: two windows instead of four, each under halved
 // per-window caps. It equals the largest chunk matchParallel hands a
 // worker in the gate-sampled dense band (parallelSparseMin split across
-// the 8-worker cap), so every chunk of such a dispatch - and the
-// sequential inputs just above dualChainFloor - takes the reduced
-// budget, while
-// whole inputs and the >=16KB chunks of larger dispatches keep the full
-// one.
+// the 8-worker cap), so gate-sampled chunks - and the sequential inputs
+// just above dualChainFloor - take the reduced budget, while whole
+// inputs and the >=16KB chunks of larger dispatches keep the full one.
+// The strict test sees the worker's slice, not its owned chunk, so the
+// edges fall back to the full (pre-existing, safe) budget rather than
+// below it: a sub-8-worker dispatch's larger chunks, a ceiling-division
+// chunk landing exactly on the threshold, and slices whose maxLen-1
+// overlap prefix pushes them over; only when a chunk lands within
+// maxLen-1 bytes below the threshold do sibling workers split between
+// the two budgets.
 //
 // The full budget oversamples at this scale: four 1KB windows cover a
 // third of a 12KB chunk, 8x the fraction the same code samples from a

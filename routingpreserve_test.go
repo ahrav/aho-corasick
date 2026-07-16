@@ -11,7 +11,6 @@ package ahocorasick
 // shape).
 
 import (
-	"os"
 	"testing"
 )
 
@@ -20,13 +19,13 @@ func TestRoutingPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ibsen := mustRead(t, "./test_data/Ibsen.txt")
-	tr := NewTrieBuilder().AddStrings(patterns[:10000]).Build()
-
-	var wordlike []byte
-	for i := 0; len(wordlike) < 256<<10; i++ {
-		wordlike = append(wordlike, patterns[i%10000]...)
+	ibsen := benchReadFile(t, "./test_data/Ibsen.txt")
+	if len(ibsen) < 96<<10 {
+		t.Fatalf("Ibsen.txt fixture too short: %d bytes, need %d", len(ibsen), 96<<10)
 	}
+	tr := buildStopByte16Trie(t, patterns[:10000])
+
+	wordlike := concat(patterns[:10000], 256<<10)
 	fs := spFalseStartCorpus(tr.rootStopBytes[0], 256<<10)
 
 	// Routing the calibration constants promise; must hold at both
@@ -74,13 +73,4 @@ func TestRoutingPreserved(t *testing.T) {
 		}
 	}
 
-}
-
-func mustRead(t *testing.T, path string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
 }
