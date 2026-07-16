@@ -285,12 +285,15 @@ func TestSingleLargeInputs(t *testing.T) {
 	}
 }
 
-// TestSingleLongDistanceFilter drives the kernel paths with a pattern
-// whose two selected filter bytes sit more than one 32-byte block apart,
-// so the kernel's second-byte load crosses into a later block than the
-// first: candidate mapping, the per-call read bound, and the scalar tail
-// all see d > 32 through Trie-derived offsets (the direct kernel test
-// stops at d == 32 and bypasses the builder's offset selection).
+// TestSingleLongDistanceFilter drives the kernel paths end-to-end with a
+// pattern whose two selected filter bytes sit more than one 32-byte block
+// apart, so the kernel's second-byte load crosses into a later block than
+// the first. The direct differential and guard-page tests already cover
+// large d values on synthetic buffers; what is unique here is the full
+// pipeline — the builder's offset selection, candidate-position mapping,
+// and the scalar-tail handoff — driven through Trie-derived offsets and
+// checked against the reference (the read contract itself is proved by
+// the guard-page test, which this heap-backed test cannot).
 func TestSingleLongDistanceFilter(t *testing.T) {
 	// '7' (digit, rank 80) and 'Q' (uppercase, rank 85) are the two
 	// rarest bytes; every middle byte is a common lowercase letter.
@@ -455,6 +458,52 @@ func TestSingleWalkDensitySwitch(t *testing.T) {
 			want := naiveMatch([]string{pat}, input)
 			if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
 				t.Fatalf("%q input %d: walk diverges at %d", pat, k, d)
+			}
+		}
+	}
+}
+
+// TestSinglePhaseTransitions stresses the kernel searchers' two-way
+// dense/sparse handoff (on arm64; elsewhere the sampled strategies)
+// with inputs that alternate phases: dense islands committing to the
+// SWAR scan must hand back to the kernel on the sparse stretches that
+// follow, dense suffixes must still trip the switch, and a dense island
+// followed by a candidate-free remainder must not strand the scan on
+// the slow path. Every shape is checked against the naive reference
+// through both Match and Walk.
+func TestSinglePhaseTransitions(t *testing.T) {
+	for _, pat := range []string{"ab", "abab", "aabaa", "Hedvig"} {
+		tr := NewTrieBuilder().AddString(pat).Build()
+		if tr.single == nil {
+			t.Fatalf("%q: single not detected", pat)
+		}
+		sparse := bytes.Repeat([]byte("qw"), 16384) // 32KB, no candidates
+		island := bytes.Repeat([]byte(pat), 2048/len(pat))
+
+		// Island then long sparse tail (with one late plant).
+		islandTail := append(append([]byte{}, island...), sparse...)
+		copy(islandTail[len(islandTail)-len(pat)-7:], pat)
+		// Sparse head, island, sparse tail: both transitions.
+		sandwich := append(append(append([]byte{}, sparse...), island...), sparse...)
+		// Alternating islands and gaps: repeated transitions.
+		var alternating []byte
+		for range 6 {
+			alternating = append(alternating, island...)
+			alternating = append(alternating, sparse[:4096]...)
+		}
+		// Island then candidate-free remainder: the kernel must keep
+		// the suffix (no SWAR strand) and still match the reference.
+		islandEmpty := append(append([]byte{}, island...), sparse[:16384]...)
+
+		for k, input := range [][]byte{islandTail, sandwich, alternating, islandEmpty} {
+			want := naiveMatch([]string{pat}, input)
+			ms := tr.Match(input)
+			if d := diffTriples(triplesFromMatches(ms), want); d != -1 {
+				t.Fatalf("%q input %d: Match diverges at %d", pat, k, d)
+			}
+			tr.ReleaseMatches(ms)
+			if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
+				t.Fatalf("%q input %d: Walk diverges at %d", pat, k, d)
 			}
 		}
 	}
