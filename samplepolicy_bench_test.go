@@ -25,7 +25,16 @@ import (
 
 // spTrie builds the single-stop-byte 16-bit automaton (sorted10k: first
 // 10k NSF words) and asserts the automaton shape the experiment needs.
+// It also gates the file on the 8-proc worker complement the rows'
+// chunk geometry was designed around: at GOMAXPROCS below 8 the
+// dispatcher hands out fewer, larger chunks (e.g. 96KiB across 4
+// workers is 24KiB chunks), which take the full sampling budget under
+// row names that promise the reduced one, so constrained runners skip
+// loudly instead of reporting numbers for the wrong policy regime.
 func spTrie(b *testing.B) *Trie {
+	if procs := runtime.GOMAXPROCS(0); procs < 8 {
+		b.Skipf("SP rows pin 8-worker chunk geometry; GOMAXPROCS=%d would time larger full-budget chunks under reduced-budget row names", procs)
+	}
 	patterns, _ := labLoad(b)
 	tr := buildStopByte16Trie(b, patterns[:10000])
 	if tr.single != nil {
@@ -42,10 +51,11 @@ func spDenseCorpus(b *testing.B) []byte {
 }
 
 // assertRegime pins the dispatch decision the experiment depends on,
-// evaluated at the same GOMAXPROCS Match's own dispatch uses, so a
-// constrained runner (e.g. -cpu=1) fails loudly here instead of
-// silently measuring the wrong path. Passing resets the timer so the
-// assertion's sampling cost stays out of short benchtime runs.
+// evaluated at the same GOMAXPROCS Match's own dispatch uses (spTrie
+// has already gated the file on >= 8 procs, so a parallel regime here
+// implies the intended 8-worker chunk geometry, not a degenerate 2-4
+// worker split). Passing resets the timer so the assertion's sampling
+// cost stays out of short benchtime runs.
 func assertRegime(b *testing.B, tr *Trie, input []byte, wantParallel, wantDense, wantKnown bool) {
 	b.Helper()
 	procs := runtime.GOMAXPROCS(0)
