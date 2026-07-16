@@ -1083,7 +1083,7 @@ func (tr *Trie) dualWorthwhileDense(input []byte, dense, denseKnown bool) bool {
 // just above dualChainFloor - take the reduced budget, while whole
 // inputs and the >=16KB chunks of larger dispatches keep the full one.
 // The strict test sees the worker's slice, not its owned chunk, so the
-// edges fall back to the full (pre-existing, safe) budget rather than
+// edges fall back to the full (safe, more-evidence) budget rather than
 // below it: a sub-8-worker dispatch's larger chunks, a ceiling-division
 // chunk landing exactly on the threshold, and slices whose maxLen-1
 // overlap prefix pushes them over; only when a chunk lands within

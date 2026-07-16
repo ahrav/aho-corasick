@@ -25,22 +25,27 @@ import (
 
 // spTrie builds the single-stop-byte 16-bit automaton (sorted10k: first
 // 10k NSF words) and asserts the automaton shape the experiment needs.
-// It also gates the file on the 8-proc worker complement the rows'
-// chunk geometry was designed around: at GOMAXPROCS below 8 the
-// dispatcher hands out fewer, larger chunks (e.g. 96KiB across 4
-// workers is 24KiB chunks), which take the full sampling budget under
-// row names that promise the reduced one, so constrained runners skip
-// loudly instead of reporting numbers for the wrong policy regime.
 func spTrie(b *testing.B) *Trie {
-	if procs := runtime.GOMAXPROCS(0); procs < 8 {
-		b.Skipf("SP rows pin 8-worker chunk geometry; GOMAXPROCS=%d would time larger full-budget chunks under reduced-budget row names", procs)
-	}
 	patterns, _ := labLoad(b)
 	tr := buildStopByte16Trie(b, patterns[:10000])
 	if tr.single != nil {
 		b.Fatal("want a multi-pattern automaton, got the single-pattern fast path")
 	}
 	return tr
+}
+
+// spGate8 skips benchmarks whose rows pin the 8-worker chunk geometry:
+// below GOMAXPROCS=8 the dispatcher hands out fewer, larger chunks
+// (96KiB across 4 workers is 24KiB chunks), which take the full
+// sampling budget - or cross the chain floor - under row names that
+// promise the chunk-scale policy, so constrained runners skip loudly
+// instead of reporting numbers for the wrong regime. Sequential
+// controls and the direct looksDense/chainSample microbenchmarks have
+// no worker-count dependency and stay portable.
+func spGate8(b *testing.B) {
+	if procs := runtime.GOMAXPROCS(0); procs < 8 {
+		b.Skipf("rows pin 8-worker chunk geometry; GOMAXPROCS=%d changes the chunk sizes and sampling budgets they document", procs)
+	}
 }
 
 // spDenseCorpus returns 256KiB of concatenated dictionary words: the
@@ -51,11 +56,11 @@ func spDenseCorpus(b *testing.B) []byte {
 }
 
 // assertRegime pins the dispatch decision the experiment depends on,
-// evaluated at the same GOMAXPROCS Match's own dispatch uses (spTrie
-// has already gated the file on >= 8 procs, so a parallel regime here
-// implies the intended 8-worker chunk geometry, not a degenerate 2-4
-// worker split). Passing resets the timer so the assertion's sampling
-// cost stays out of short benchtime runs.
+// evaluated at the same GOMAXPROCS Match's own dispatch uses (parallel
+// groups also call spGate8, so a parallel regime here implies the
+// intended 8-worker chunk geometry, not a degenerate 2-4 worker
+// split). Passing resets the timer so the assertion's sampling cost
+// stays out of short benchtime runs.
 func assertRegime(b *testing.B, tr *Trie, input []byte, wantParallel, wantDense, wantKnown bool) {
 	b.Helper()
 	procs := runtime.GOMAXPROCS(0)
@@ -76,6 +81,7 @@ func assertRegime(b *testing.B, tr *Trie, input []byte, wantParallel, wantDense,
 // and workers chain-vote instead (density only breaks ties). 127 KiB stays
 // under parallelSparseMin, past which the gate stops sampling entirely.
 func BenchmarkSPDenseBand(b *testing.B) {
+	spGate8(b)
 	tr := spTrie(b)
 	corpus := spDenseCorpus(b)
 	for _, size := range []int{32 << 10, 48 << 10, 64 << 10, 96 << 10, 127 << 10} {
@@ -115,6 +121,7 @@ func spHeteroInput(b *testing.B, size int, sparseBlocks map[int]bool) []byte {
 }
 
 func BenchmarkSPHetero(b *testing.B) {
+	spGate8(b)
 	tr := spTrie(b)
 	// 64 KiB = 8 blocks of 8 KiB; looksDense windows land in blocks
 	// 0 (head), 4 (mid), 7 (tail); workers get one block each (p=8).
@@ -213,6 +220,7 @@ func BenchmarkSPLooksDenseCost(b *testing.B) {
 // chunks, below the chain floor) routing falls back to density, so that
 // row covers the density-routed shape of the same input.
 func BenchmarkSPFalseStart(b *testing.B) {
+	spGate8(b)
 	tr := spTrie(b)
 	corpus := spFalseStartCorpus(tr.rootStopBytes[0], 127<<10)
 	for _, size := range []int{64 << 10, 96 << 10, 127 << 10} {
@@ -255,6 +263,7 @@ func BenchmarkSPSeqSmall(b *testing.B) {
 // vote sits in the gray band where sampling-budget changes could flip
 // windows. gap picked at setup so the whole input still gates dense.
 func BenchmarkSPGray(b *testing.B) {
+	spGate8(b)
 	patterns, _ := labLoad(b)
 	tr := spTrie(b)
 	for _, gap := range []int{2, 3} {
