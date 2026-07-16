@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm assembles index_arm64.s and runs the NEON
+        # kernel differential and guard-page tests natively; ubuntu-24.04
+        # covers the portable paths on amd64.
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test ./...
+      - name: vet and test with purego tag
+        run: |
+          go vet -tags purego ./...
+          go test -tags purego ./...
+      - name: cross-compile vet for other arm64 targets
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          for goos in darwin windows freebsd netbsd openbsd; do
+            echo "vet GOOS=$goos GOARCH=arm64"
+            GOOS=$goos GOARCH=arm64 go vet ./...
+          done

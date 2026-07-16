@@ -535,6 +535,21 @@ func (tr *Trie) skipRootTable(input []byte, i int) int {
 // skipRootIndex finds the next stop byte at or after i with one
 // bytes.IndexByte pass per stop value over successive 4KB windows.
 func (tr *Trie) skipRootIndex(input []byte, i int) int {
+	// With exactly two stop bytes and the vector kernel available, one
+	// single-pass scan replaces the windowed per-value passes entirely.
+	if hasOr2Kernel && len(tr.skipBytes) == 2 && i < len(input) {
+		a, b := tr.skipBytes[0], tr.skipBytes[1]
+		m := len(input) - i
+		if j := indexOr2(input[i:], m, a, b); j >= 0 {
+			return i + j
+		}
+		for t := i + m&^31; t < len(input); t++ {
+			if input[t] == a || input[t] == b {
+				return t
+			}
+		}
+		return len(input)
+	}
 	// 4KB was the best balance on Graviton3 across no-match and prose;
 	// larger windows improved no-match throughput but regressed prose.
 	const window = 4096

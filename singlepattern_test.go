@@ -245,6 +245,90 @@ func TestSingleWalkStrategiesStop(t *testing.T) {
 	}
 }
 
+// TestSingleLargeInputs exercises the large-input single-pattern paths
+// end-to-end (on arm64 the vector kernel and its adaptive handover to
+// the SWAR scan; elsewhere the sampled strategies) against the naive
+// reference: sparse prose-like input, pair-dense periodic input that
+// forces the mid-stream switch, and a hit landing in the scalar tail
+// after the last full block.
+func TestSingleLargeInputs(t *testing.T) {
+	rng := rand.New(rand.NewSource(1234))
+	for _, pattern := range []string{"ab", "aba", "Hedvig", "imorges"} {
+		tr := NewTrieBuilder().AddString(pattern).Build()
+
+		// Sparse: 64KB filler with occasional plants.
+		sparse := make([]byte, 64<<10)
+		for i := range sparse {
+			sparse[i] = byte(' ' + rng.Intn(90))
+		}
+		for k := 0; k < 40; k++ {
+			copy(sparse[rng.Intn(len(sparse)-len(pattern)):], pattern)
+		}
+		// Tail hit: plant in the final partial block.
+		copy(sparse[len(sparse)-len(pattern)-3:], pattern)
+
+		// Dense: the pattern repeated back-to-back (maximum overlap and
+		// candidate density; trips the kernel's adaptive bailout).
+		dense := bytes.Repeat([]byte(pattern), (32<<10)/len(pattern))
+
+		for name, input := range map[string][]byte{"sparse": sparse, "dense": dense} {
+			want := naiveMatch([]string{pattern}, input)
+			ms := tr.Match(input)
+			if d := diffTriples(triplesFromMatches(ms), want); d != -1 {
+				t.Fatalf("%q/%s: Match diverges from reference at %d", pattern, name, d)
+			}
+			tr.ReleaseMatches(ms)
+			if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
+				t.Fatalf("%q/%s: Walk diverges from reference at %d", pattern, name, d)
+			}
+		}
+	}
+}
+
+// TestSingleLongDistanceFilter drives the kernel paths end-to-end with a
+// pattern whose two selected filter bytes sit more than one 32-byte block
+// apart, so the kernel's second-byte load crosses into a later block than
+// the first. The direct differential and guard-page tests already cover
+// large d values on synthetic buffers; what is unique here is the full
+// pipeline — the builder's offset selection, candidate-position mapping,
+// and the scalar-tail handoff — driven through Trie-derived offsets and
+// checked against the reference (the read contract itself is proved by
+// the guard-page test, which this heap-backed test cannot).
+func TestSingleLongDistanceFilter(t *testing.T) {
+	// '7' (digit, rank 80) and 'Q' (uppercase, rank 85) are the two
+	// rarest bytes; every middle byte is a common lowercase letter.
+	pattern := "Q" + strings.Repeat("eta", 13) + "7"
+	tr := NewTrieBuilder().AddString(pattern).Build()
+	if tr.single == nil {
+		t.Fatal("single not detected")
+	}
+	if d := absInt(tr.singleO1 - tr.singleO2); d <= 32 {
+		t.Fatalf("filter distance %d, want > 32; offsets %d,%d",
+			d, tr.singleO1, tr.singleO2)
+	}
+
+	input := bytes.Repeat([]byte("loremipsu"), 1000) // 9KB, no 'Q'/'7'
+	// Full-block hits, including adjacent occurrences.
+	copy(input[100:], pattern)
+	copy(input[100+len(pattern):], pattern)
+	copy(input[4096:], pattern)
+	// Scalar-tail hit: the last valid start, past the final full block.
+	copy(input[len(input)-len(pattern):], pattern)
+
+	want := naiveMatch([]string{pattern}, input)
+	if len(want) != 4 {
+		t.Fatalf("reference found %d occurrences, want 4", len(want))
+	}
+	ms := tr.Match(input)
+	if d := diffTriples(triplesFromMatches(ms), want); d != -1 {
+		t.Fatalf("Match diverges from reference at %d", d)
+	}
+	tr.ReleaseMatches(ms)
+	if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
+		t.Fatalf("Walk diverges from reference at %d", d)
+	}
+}
+
 // TestSinglePatternRejectsNoncanonicalTable corrupts individual
 // transition entries of canonical single-pattern tables and asserts the
 // detector turns the fast path off: the shape checks (state count, one
@@ -374,6 +458,52 @@ func TestSingleWalkDensitySwitch(t *testing.T) {
 			want := naiveMatch([]string{pat}, input)
 			if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
 				t.Fatalf("%q input %d: walk diverges at %d", pat, k, d)
+			}
+		}
+	}
+}
+
+// TestSinglePhaseTransitions stresses the kernel searchers' two-way
+// dense/sparse handoff (on arm64; elsewhere the sampled strategies)
+// with inputs that alternate phases: dense islands committing to the
+// SWAR scan must hand back to the kernel on the sparse stretches that
+// follow, dense suffixes must still trip the switch, and a dense island
+// followed by a candidate-free remainder must not strand the scan on
+// the slow path. Every shape is checked against the naive reference
+// through both Match and Walk.
+func TestSinglePhaseTransitions(t *testing.T) {
+	for _, pat := range []string{"ab", "abab", "aabaa", "Hedvig"} {
+		tr := NewTrieBuilder().AddString(pat).Build()
+		if tr.single == nil {
+			t.Fatalf("%q: single not detected", pat)
+		}
+		sparse := bytes.Repeat([]byte("qw"), 16384) // 32KB, no candidates
+		island := bytes.Repeat([]byte(pat), 2048/len(pat))
+
+		// Island then long sparse tail (with one late plant).
+		islandTail := append(append([]byte{}, island...), sparse...)
+		copy(islandTail[len(islandTail)-len(pat)-7:], pat)
+		// Sparse head, island, sparse tail: both transitions.
+		sandwich := append(append(append([]byte{}, sparse...), island...), sparse...)
+		// Alternating islands and gaps: repeated transitions.
+		var alternating []byte
+		for range 6 {
+			alternating = append(alternating, island...)
+			alternating = append(alternating, sparse[:4096]...)
+		}
+		// Island then candidate-free remainder: the kernel must keep
+		// the suffix (no SWAR strand) and still match the reference.
+		islandEmpty := append(append([]byte{}, island...), sparse[:16384]...)
+
+		for k, input := range [][]byte{islandTail, sandwich, alternating, islandEmpty} {
+			want := naiveMatch([]string{pat}, input)
+			ms := tr.Match(input)
+			if d := diffTriples(triplesFromMatches(ms), want); d != -1 {
+				t.Fatalf("%q input %d: Match diverges at %d", pat, k, d)
+			}
+			tr.ReleaseMatches(ms)
+			if d := diffTriples(tr.triplesFromWalk(input), want); d != -1 {
+				t.Fatalf("%q input %d: Walk diverges at %d", pat, k, d)
 			}
 		}
 	}
