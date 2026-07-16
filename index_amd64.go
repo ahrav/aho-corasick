@@ -7,11 +7,14 @@ package ahocorasick
 // or2 kernel is compiled and tested but not dispatched, because the
 // stdlib IndexByte runs AVX2 here and two windowed 80GB/s passes beat
 // one 28GB/s SSE2 pass (measured on Zen 4: 39 vs 25GB/s effective on
-// the two-stop-byte no-match row). Enabling or2 on amd64 needs an
-// AVX2 kernel with runtime feature detection.
+// the two-stop-byte no-match row).
 const (
 	hasPairKernel = true
-	hasOr2Kernel  = false
+	// DO NOT flip to true while indexOr2 wraps the SSE2 kernel below:
+	// dispatching it measured a 57% regression on the two-stop-byte
+	// no-match row vs the windowed IndexByte path. Enabling or2 on
+	// amd64 requires an AVX2 kernel with runtime feature detection.
+	hasOr2Kernel = false
 )
 
 // indexPair2Asm returns the smallest i in [0, m&^31) with p[i] == a and
