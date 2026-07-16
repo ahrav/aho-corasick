@@ -15,7 +15,7 @@ jobs:
       matrix:
         # ubuntu-24.04-arm assembles index_arm64.s and runs the NEON
         # kernel differential and guard-page tests natively; ubuntu-24.04
-        # covers the portable paths on amd64.
+        # does the same for the SSE2 kernels in index_amd64.s.
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
@@ -39,4 +39,11 @@ jobs:
           for goos in darwin windows freebsd netbsd openbsd; do
             echo "vet GOOS=$goos GOARCH=arm64"
             GOOS=$goos GOARCH=arm64 go vet ./...
+          done
+      - name: cross-compile vet for other amd64 targets
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          for goos in darwin windows freebsd netbsd openbsd; do
+            echo "vet GOOS=$goos GOARCH=amd64"
+            GOOS=$goos GOARCH=amd64 go vet ./...
           done

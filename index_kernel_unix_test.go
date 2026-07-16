@@ -1,4 +1,4 @@
-//go:build arm64 && !purego && (linux || darwin)
+//go:build (arm64 || amd64) && !purego && (linux || darwin)
 
 package ahocorasick
 
@@ -6,7 +6,8 @@ package ahocorasick
 // p[0 : m&^31 + d], indexOr2 reads p[0 : m&^31]. The buffers end exactly
 // at a PROT_NONE page, so one byte of overread segfaults the test.
 // Separate file: the std syscall package exposes Mmap/Mprotect only on
-// linux and darwin among arm64 targets (the BSDs moved them to x/sys).
+// linux and darwin among the kernel targets (the BSDs moved them to
+// x/sys).
 
 import (
 	"syscall"
