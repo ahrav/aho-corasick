@@ -15,10 +15,12 @@ package ahocorasick
 //     starts per iteration, with no per-candidate restart cost.
 //     Throughput is flat (~3GB/s) regardless of candidate density.
 //
-// Each scan samples the rare byte's density and picks: rare-byte wins
-// when candidates are sparse, the pair scan when the "rare" byte is
-// locally common (e.g. prose, where every pattern byte is a frequent
-// letter).
+// Each scan picks by the rare byte's density: rare-byte wins when
+// candidates are sparse, the pair scan when the "rare" byte is locally
+// common (e.g. prose, where every pattern byte is a frequent letter).
+// The match path samples density up front (it scans everything anyway);
+// the callback walk decides inline from bytes already scanned, so an
+// early-terminating caller never pays for reads past its last match.
 //
 // bytes.Index is deliberately not used: on arm64 it generates candidates
 // from the first byte only, so a common-first-byte needle over prose
@@ -114,8 +116,6 @@ func (tr *Trie) buildSinglePattern() {
 		}
 		pat = append(pat, byte(found))
 	}
-	tr.single = pat
-	tr.singleDP = tr.dictPat[final]
 
 	// KMP prefix function: the minimal distance between overlapping
 	// occurrence starts is the period n - lps[n-1]. Advancing by it
@@ -131,6 +131,48 @@ func (tr *Trie) buildSinglePattern() {
 		}
 		lps[i] = k
 	}
+
+	// The checks above prove the shape (state count, outputs, one chain
+	// edge per state) but not the remaining row entries. Build always
+	// produces the canonical KMP automaton, but Decode accepts any
+	// in-range transition table, and a noncanonical one that passes the
+	// shape checks has different generic semantics than the recovered
+	// pattern (e.g. a final state whose row drops back to the root
+	// instead of re-entering the chain suppresses the second of two
+	// overlapping occurrences). Verify every remaining entry against
+	// the automaton the pattern implies, or leave the fast path off.
+	//
+	// Canonical rows, validated in state order so each state's fail row
+	// (depth lps[s-2], a state id strictly below s) is already known
+	// canonical when referenced: the root sends non-pattern bytes to
+	// itself, and every deeper state copies its fail state's row except
+	// at its chain byte.
+	for b := range 256 {
+		want := rootState
+		if byte(b) == pat[0] {
+			want = rootState + 1
+		}
+		if tr.failTrans[rootState][b]&stateMask != want {
+			return
+		}
+	}
+	for s := rootState + 1; s <= final; s++ {
+		row := &tr.failTrans[s]
+		failRow := &tr.failTrans[lps[s-2]+1]
+		d := int(s) - 1 // pattern bytes matched entering s
+		for b := range 256 {
+			want := failRow[b] & stateMask
+			if d < n && byte(b) == pat[d] {
+				want = s + 1
+			}
+			if row[b]&stateMask != want {
+				return
+			}
+		}
+	}
+
+	tr.single = pat
+	tr.singleDP = tr.dictPat[final]
 	tr.singleSkip = n - lps[n-1]
 
 	// Candidate filter offsets: the two lowest-ranked (rarest) pattern
@@ -188,6 +230,25 @@ func singleVerify(input []byte, pos int, p []byte) bool {
 		binary.LittleEndian.Uint64(input[pos+n-8:]) == binary.LittleEndian.Uint64(p[n-8:])
 }
 
+// singleVerifyCarry is singleVerify with a KMP-period carry: when the
+// previous confirmed match lies d < len(p) bytes back at a multiple of
+// the period (singleSkip), that match already proves the candidate's
+// first len(p)-d bytes — input[pos:prev+len(p)] equals p[d:] by the
+// previous match, and p[d:] equals p[:len(p)-d] because a multiple of
+// the period is itself a period — so only the last d bytes need
+// comparing. Without the carry, a periodic pattern over match-dense
+// input (m repeated a's over n repeated a's) re-verifies all m bytes at
+// each of the n overlapping occurrences, degrading the O(n) automaton
+// scan this path replaces to O(n*m); with it those tail compares sum to
+// O(n). prev < 0 means no previous match.
+func singleVerifyCarry(input []byte, pos, prev, skip int, p []byte) bool {
+	if d := pos - prev; prev >= 0 && d < len(p) && d%skip == 0 {
+		known := len(p) - d
+		return singleVerify(input, pos+known, p[known:])
+	}
+	return singleVerify(input, pos, p)
+}
+
 // singlePairDense reports whether rare-byte candidate density is high
 // enough that the flat-throughput SWAR pair scan beats IndexByte
 // candidate generation. Break-even (measured, Neoverse V1): rare-byte
@@ -195,15 +256,22 @@ func singleVerify(input []byte, pos int, p []byte) bool {
 // ~345ns/KB flat — so rare-byte loses above ~26 candidates per KB (~2.6%
 // density). Three 1KB windows (head, middle, tail) sample the density;
 // below 8KB the stakes are too small to pay for sampling.
+//
+// Only the match path uses this up-front sample: it scans the whole
+// input regardless, so touching the middle and tail windows early costs
+// nothing extra. The callback walk must stay lazy (a Walk callback may
+// stop at the first match — MatchFirst — so nothing may be read ahead
+// of the scan); singleRareWalk instead accumulates the same density
+// signal inline over the bytes already covered and switches mid-scan.
 func (tr *Trie) singlePairDense(input []byte) bool {
 	if len(input) < 8<<10 {
 		return false
 	}
 	c := tr.single[tr.singleO1 : tr.singleO1+1]
-	n := len(input)
-	k := bytes.Count(input[:1024], c)
-	k += bytes.Count(input[n/2:n/2+1024], c)
-	k += bytes.Count(input[n-1024:], c)
+	k := 0
+	for _, w := range sampleWindows(input) {
+		k += bytes.Count(w, c)
+	}
 	return k >= 78 // ~2.6% of the 3KB sampled
 }
 
@@ -234,7 +302,17 @@ func (tr *Trie) matchSingle(input []byte, buf *matchBuf) {
 	tr.singleRareMatch(input, buf)
 }
 
-// walkSingle is matchSingle for the callback API.
+// walkSingle is matchSingle for the callback API. Unlike matchSingle it
+// never samples density up front: the callback may stop the walk at the
+// first match (MatchFirst does), and an up-front head/middle/tail
+// sample would touch distant pages of a large cold input before a match
+// at offset zero could be delivered — the same rule the automaton walk
+// paths follow (see walkTable). singleRareWalk measures candidate
+// density inline over bytes it has already scanned and hands off to the
+// pair scan when the rare byte turns out to be locally common. The
+// kernel walk observes the same rule: it scans strictly forward, block
+// by block, and hands dense stretches to the pair scan in bounded
+// spans, taking back over when the candidate stream turns sparse again.
 func (tr *Trie) walkSingle(input []byte, fn WalkFn) {
 	if len(tr.single) == 1 {
 		c := tr.single[0]
@@ -254,10 +332,6 @@ func (tr *Trie) walkSingle(input []byte, fn WalkFn) {
 		tr.singleKernelWalk(input, fn)
 		return
 	}
-	if tr.singlePairDense(input) {
-		tr.singlePairWalk(input, fn)
-		return
-	}
 	tr.singleRareWalk(input, fn)
 }
 
@@ -270,6 +344,8 @@ func (tr *Trie) singleRareMatch(input []byte, buf *matchBuf) {
 	o1, o2 := tr.singleO1, tr.singleO2
 	c1, c2 := p[o1], p[o2]
 	dp := tr.singleDP
+	skip := tr.singleSkip
+	prev := -1 // last confirmed match start, for the period carry
 	for i := 0; i+n <= len(input); {
 		j := bytes.IndexByte(input[i+o1:], c1)
 		if j < 0 {
@@ -279,22 +355,46 @@ func (tr *Trie) singleRareMatch(input []byte, buf *matchBuf) {
 		if pos+n > len(input) {
 			return
 		}
-		if input[pos+o2] == c2 && singleVerify(input, pos, p) {
+		if input[pos+o2] == c2 && singleVerifyCarry(input, pos, prev, skip, p) {
 			buf.raw = append(buf.raw, uint64(pos+n-1), dp)
-			i = pos + tr.singleSkip
+			prev = pos
+			i = pos + skip
 		} else {
 			i = pos + 1
 		}
 	}
 }
 
-// singleRareWalk is singleRareMatch for the callback API.
+// Inline switch thresholds for the callback walk (singleRareWalk): the
+// same ~2.6% break-even singlePairDense encodes, but accumulated over
+// the bytes the scan has already covered instead of sampled windows, so
+// the walk never reads ahead of itself. Switch once the candidate count
+// carries the same evidence mass as the eager sampler (78 hits) while
+// still outpacing one candidate per singleSwitchSpan bytes.
+const (
+	singleSwitchMinCands = 78
+	singleSwitchSpan     = 38 // ~1/2.6%
+)
+
+// pairPhaseSpan is the span of one SWAR phase in the kernel searchers'
+// two-way handoff (singleKernelMatch): after a dense window hands over,
+// the SWAR scan runs one span at a time and control returns to the
+// kernel as soon as a span carries at most one candidate per 64 bytes —
+// the same break-even density the handoff itself encodes.
+const pairPhaseSpan = 4096
+
+// singleRareWalk is singleRareMatch for the callback API, with the lazy
+// density switch described at walkSingle: when the rare byte proves
+// locally common, hand the remainder of the input to the pair scan.
 func (tr *Trie) singleRareWalk(input []byte, fn WalkFn) {
 	p := tr.single
 	n := len(p)
 	o1, o2 := tr.singleO1, tr.singleO2
 	c1, c2 := p[o1], p[o2]
 	dp := tr.singleDP
+	skip := tr.singleSkip
+	prev := -1
+	cands := 0
 	for i := 0; i+n <= len(input); {
 		j := bytes.IndexByte(input[i+o1:], c1)
 		if j < 0 {
@@ -304,11 +404,20 @@ func (tr *Trie) singleRareWalk(input []byte, fn WalkFn) {
 		if pos+n > len(input) {
 			return
 		}
-		if input[pos+o2] == c2 && singleVerify(input, pos, p) {
+		cands++
+		if cands >= singleSwitchMinCands && cands*singleSwitchSpan > pos {
+			// Candidates are dense: the pair scan wins from here on.
+			// It resumes at this (unprocessed) candidate, so nothing
+			// is skipped or emitted twice.
+			tr.singlePairWalkFrom(input, pos, fn)
+			return
+		}
+		if input[pos+o2] == c2 && singleVerifyCarry(input, pos, prev, skip, p) {
 			if !fn(uint32(pos+n-1), uint32(dp), uint32(dp>>32)) {
 				return
 			}
-			i = pos + tr.singleSkip
+			prev = pos
+			i = pos + skip
 		} else {
 			i = pos + 1
 		}
@@ -325,6 +434,17 @@ func (tr *Trie) singlePairMatch(input []byte, buf *matchBuf) {
 // singlePairMatchFrom is singlePairMatch starting at position from; the
 // kernel path hands over here when the candidate stream turns out dense.
 func (tr *Trie) singlePairMatchFrom(input []byte, from int, buf *matchBuf) {
+	tr.singlePairMatchRange(input, from, len(input)-len(tr.single)+1, buf)
+}
+
+// singlePairMatchRange scans candidate starts in [from, end) with the
+// SWAR pair loop; end <= limit+1 always. When end > limit the scan is
+// complete (including the scalar tail); otherwise the caller resumes at
+// the returned position — candidate starts before it were handled or
+// proven impossible. The second return value counts SWAR lane hits
+// observed (borrow false positives included): a density signal for the
+// kernel's phase policy, not an exact candidate count.
+func (tr *Trie) singlePairMatchRange(input []byte, from, end int, buf *matchBuf) (int, int) {
 	p := tr.single
 	n := len(p)
 	oa, ob := tr.singleO1, tr.singleO2
@@ -334,9 +454,12 @@ func (tr *Trie) singlePairMatchFrom(input []byte, from int, buf *matchBuf) {
 	ca := swarOnes * uint64(p[oa])
 	cb := swarOnes * uint64(p[ob])
 	dp := tr.singleDP
+	skip := tr.singleSkip
 
 	limit := len(input) - n // last valid start
 	next := from            // next start allowed by the KMP period
+	prev := -1              // last confirmed match start, for the period carry
+	cands := 0
 	i := from
 	// Two independent 8-byte lanes per iteration: the lanes share no
 	// data, so their load-xor-test chains overlap and the common no-hit
@@ -345,8 +468,17 @@ func (tr *Trie) singlePairMatchFrom(input []byte, from int, buf *matchBuf) {
 	// through a 16-byte reslice of provably constant length, so the
 	// compiler keeps one bounds check per slice and elides the rest;
 	// binary.LittleEndian keeps the byte order portable (it compiles
-	// to a plain load on little-endian targets).
-	for ; i+ob+16 <= len(input); i += 16 {
+	// to a plain load on little-endian targets). The intersected
+	// swarZero masks can carry borrow false positives (see swarZero);
+	// singleVerifyCarry, not the mask, is the correctness boundary.
+	// The lane loop is bounded by the last valid start (i+15 <= limit,
+	// via end <= limit+1), not by len(input): a long pattern with early
+	// filter offsets would otherwise enumerate dense candidates past
+	// limit only to discard them. That bound also proves the loads in
+	// range — i+ob+15 <= limit+ob = len(input)-n+ob <= len(input)-1
+	// since ob <= n-1. Candidate counting lives only in the hit
+	// branches, so the no-hit fast path pays nothing for it.
+	for ; i+16 <= end; i += 16 {
 		wA := input[i+oa : i+oa+16]
 		wB := input[i+ob : i+ob+16]
 		wa0 := binary.LittleEndian.Uint64(wA)
@@ -361,32 +493,44 @@ func (tr *Trie) singlePairMatchFrom(input []byte, from int, buf *matchBuf) {
 		for m0 != 0 {
 			pos := i + bits.TrailingZeros64(m0)>>3
 			m0 &= m0 - 1
+			cands++
 			if pos < next || pos > limit {
 				continue
 			}
-			if singleVerify(input, pos, p) {
+			if singleVerifyCarry(input, pos, prev, skip, p) {
 				buf.raw = append(buf.raw, uint64(pos+n-1), dp)
-				next = pos + tr.singleSkip
+				prev = pos
+				next = pos + skip
 			}
 		}
 		for m1 != 0 {
 			pos := i + 8 + bits.TrailingZeros64(m1)>>3
 			m1 &= m1 - 1
+			cands++
 			if pos < next || pos > limit {
 				continue
 			}
-			if singleVerify(input, pos, p) {
+			if singleVerifyCarry(input, pos, prev, skip, p) {
 				buf.raw = append(buf.raw, uint64(pos+n-1), dp)
-				next = pos + tr.singleSkip
+				prev = pos
+				next = pos + skip
 			}
 		}
 	}
+	if end <= limit {
+		// Interior range: positions from i on are unprocessed; the
+		// caller resumes there (next carries the period constraint).
+		return max(i, next), cands
+	}
 	for pos := max(i, next); pos <= limit; pos++ {
-		if input[pos+oa] == p[oa] && input[pos+ob] == p[ob] && singleVerify(input, pos, p) {
+		if input[pos+oa] == p[oa] && input[pos+ob] == p[ob] &&
+			singleVerifyCarry(input, pos, prev, skip, p) {
 			buf.raw = append(buf.raw, uint64(pos+n-1), dp)
-			pos += tr.singleSkip - 1 // the loop increment adds the 1 back
+			prev = pos
+			pos += skip - 1 // the loop increment adds the 1 back
 		}
 	}
+	return limit + 1, cands
 }
 
 // singlePairWalk is singlePairMatch for the callback API.
@@ -394,8 +538,19 @@ func (tr *Trie) singlePairWalk(input []byte, fn WalkFn) {
 	tr.singlePairWalkFrom(input, 0, fn)
 }
 
-// singlePairWalkFrom is singlePairWalk starting at position from.
-func (tr *Trie) singlePairWalkFrom(input []byte, from int, fn WalkFn) {
+// singlePairWalkFrom is singlePairWalk starting at candidate position
+// start, so singleRareWalk's mid-scan density switch and the kernel
+// walk's dense-stream bailout can hand off the unscanned remainder.
+// Candidates before start were already handled (or proven impossible)
+// by the caller.
+func (tr *Trie) singlePairWalkFrom(input []byte, start int, fn WalkFn) {
+	tr.singlePairWalkRange(input, start, len(input)-len(tr.single)+1, fn)
+}
+
+// singlePairWalkRange is singlePairMatchRange for the callback API. The
+// third return value reports whether the callback stopped the walk, in
+// which case the caller must stop too.
+func (tr *Trie) singlePairWalkRange(input []byte, from, end int, fn WalkFn) (int, int, bool) {
 	p := tr.single
 	n := len(p)
 	oa, ob := tr.singleO1, tr.singleO2
@@ -405,12 +560,16 @@ func (tr *Trie) singlePairWalkFrom(input []byte, from int, fn WalkFn) {
 	ca := swarOnes * uint64(p[oa])
 	cb := swarOnes * uint64(p[ob])
 	dp := tr.singleDP
+	skip := tr.singleSkip
 
 	limit := len(input) - n
 	next := from
+	prev := -1
+	cands := 0
 	i := from
-	// Same two-lane structure as singlePairMatch.
-	for ; i+ob+16 <= len(input); i += 16 {
+	// Same two-lane structure (and lane-loop bound) as
+	// singlePairMatchRange.
+	for ; i+16 <= end; i += 16 {
 		wA := input[i+oa : i+oa+16]
 		wB := input[i+ob : i+ob+16]
 		wa0 := binary.LittleEndian.Uint64(wA)
@@ -425,42 +584,62 @@ func (tr *Trie) singlePairWalkFrom(input []byte, from int, fn WalkFn) {
 		for m0 != 0 {
 			pos := i + bits.TrailingZeros64(m0)>>3
 			m0 &= m0 - 1
+			cands++
 			if pos < next || pos > limit {
 				continue
 			}
-			if singleVerify(input, pos, p) {
+			if singleVerifyCarry(input, pos, prev, skip, p) {
 				if !fn(uint32(pos+n-1), uint32(dp), uint32(dp>>32)) {
-					return
+					return pos, cands, true
 				}
-				next = pos + tr.singleSkip
+				prev = pos
+				next = pos + skip
 			}
 		}
 		for m1 != 0 {
 			pos := i + 8 + bits.TrailingZeros64(m1)>>3
 			m1 &= m1 - 1
+			cands++
 			if pos < next || pos > limit {
 				continue
 			}
-			if singleVerify(input, pos, p) {
+			if singleVerifyCarry(input, pos, prev, skip, p) {
 				if !fn(uint32(pos+n-1), uint32(dp), uint32(dp>>32)) {
-					return
+					return pos, cands, true
 				}
-				next = pos + tr.singleSkip
+				prev = pos
+				next = pos + skip
 			}
 		}
+	}
+	if end <= limit {
+		return max(i, next), cands, false
 	}
 	for pos := max(i, next); pos <= limit; pos++ {
-		if input[pos+oa] == p[oa] && input[pos+ob] == p[ob] && singleVerify(input, pos, p) {
+		if input[pos+oa] == p[oa] && input[pos+ob] == p[ob] &&
+			singleVerifyCarry(input, pos, prev, skip, p) {
 			if !fn(uint32(pos+n-1), uint32(dp), uint32(dp>>32)) {
-				return
+				return pos, cands, true
 			}
-			pos += tr.singleSkip - 1
+			prev = pos
+			pos += skip - 1
 		}
 	}
+	return limit + 1, cands, false
 }
 
-// swarZero returns a mask with bit 7 of each byte set iff that byte of w
-// is zero.
+// swarZero returns a mask with bit 7 of each byte set for every zero
+// byte of w. The mask is a superset, not exact: the subtraction borrows
+// across lanes, so a 0x01 lane sitting above a zero lane (or above a
+// chain of 0x01 lanes reaching one) is falsely flagged — a borrow can
+// only start at a true zero (v-1 underflows only for v == 0), and lanes
+// >= 0x02 either absorb it or have bit 7 masked off by &^ w. Every true
+// zero lane is always flagged, so there are no false negatives, and the
+// lowest set bit is always a true zero. The pair scans intersect two of
+// these masks as a candidate *filter*: a stray lane costs one
+// singleVerifyCarry call that exits on its first word, cheaper than
+// paying for an exact per-lane mask on the no-hit fast path that
+// dominates the scan.
 func swarZero(w uint64) uint64 {
 	return (w - swarOnes) &^ w & swarHighs
 }
@@ -472,10 +651,12 @@ func swarZero(w uint64) uint64 {
 // Only called when hasPairKernel.
 //
 // Position mapping: pattern start s puts the low-offset filter byte at
-// input[s+oa], so the kernel scans input[oa:] and its index j IS the
-// candidate start. Read contract: the kernel touches at most
-// input[oa : oa + (limit+1)&^31 + (ob-oa)], which stays inside input
-// because ob <= n-1 and limit = len(input)-n.
+// input[s+oa], so each call scans input[s+oa:] and its index j offsets
+// from s. Read contract, per call: with m = limit-s+1 candidate starts
+// remaining, the kernel reads at most input[s+oa : s+oa+m&^31+(ob-oa)]
+// (see the guard-page test). Since m&^31 <= m, the exclusive end is at
+// most s+oa+(limit-s+1)+(ob-oa) = limit+ob+1 <= len(input), because
+// ob <= n-1 and limit = len(input)-n.
 func (tr *Trie) singleKernelMatch(input []byte, buf *matchBuf) {
 	p := tr.single
 	n := len(p)
@@ -489,16 +670,8 @@ func (tr *Trie) singleKernelMatch(input []byte, buf *matchBuf) {
 	limit := len(input) - n // last valid start
 	s := 0
 	candidates := 0
+	anchor := 0 // window start for the density measurement
 	for s <= limit {
-		// Adaptive bailout: each kernel return costs a call restart
-		// (~17ns), so a pair-dense stream (>1 candidate per 64 bytes,
-		// after a 32-candidate grace) is better served by the SWAR
-		// scan with inline candidate handling. Bounded regret: at
-		// most ~2KB scanned the slow way before switching.
-		if candidates++; candidates > 32 && candidates*64 > s {
-			tr.singlePairMatchFrom(input, s, buf)
-			return
-		}
 		m := limit - s + 1 // candidate starts remaining
 		j := indexPair2(input[s+oa:], m, a, b, d)
 		if j < 0 {
@@ -518,6 +691,39 @@ func (tr *Trie) singleKernelMatch(input []byte, buf *matchBuf) {
 		} else {
 			s = cand + 1
 		}
+		// Adaptive phase policy: each kernel return costs a call
+		// restart (~17ns), so a pair-dense stream (>1 candidate per
+		// 64 bytes) is better served by the SWAR scan with inline
+		// candidate handling. Density is measured over a tumbling
+		// window — 32 returned candidates against the bytes they
+		// span — and evaluated only after the kernel has returned a
+		// candidate, so a candidate-free suffix is always skipped at
+		// kernel speed, never handed to the scalar scan. When a
+		// window proves dense the SWAR scan takes over span by span
+		// and hands back as soon as one span turns sparse, so
+		// neither a dense island nor a sparse tail commits the
+		// remainder of the input to the wrong strategy. Bounded
+		// regret per transition: at most ~64 restarts (~2 windows)
+		// to detect density, one ~4KB span to detect sparsity.
+		if candidates++; candidates > 32 {
+			if candidates*64 > cand-anchor {
+				// Dense: SWAR phases until a span proves sparse.
+				for s <= limit {
+					end := min(s+pairPhaseSpan, limit+1)
+					var got int
+					s, got = tr.singlePairMatchRange(input, s, end, buf)
+					if end > limit {
+						return
+					}
+					if got*64 <= pairPhaseSpan {
+						break // sparse span: back to the kernel
+					}
+				}
+			}
+			// Restart the measurement window here.
+			candidates = 0
+			anchor = s
+		}
 	}
 }
 
@@ -535,12 +741,8 @@ func (tr *Trie) singleKernelWalk(input []byte, fn WalkFn) {
 	limit := len(input) - n
 	s := 0
 	candidates := 0
+	anchor := 0
 	for s <= limit {
-		// See singleKernelMatch for the adaptive bailout.
-		if candidates++; candidates > 32 && candidates*64 > s {
-			tr.singlePairWalkFrom(input, s, fn)
-			return
-		}
 		m := limit - s + 1
 		j := indexPair2(input[s+oa:], m, a, b, d)
 		if j < 0 {
@@ -562,6 +764,25 @@ func (tr *Trie) singleKernelWalk(input []byte, fn WalkFn) {
 			s = cand + tr.singleSkip
 		} else {
 			s = cand + 1
+		}
+		// See singleKernelMatch for the adaptive phase policy.
+		if candidates++; candidates > 32 {
+			if candidates*64 > cand-anchor {
+				for s <= limit {
+					end := min(s+pairPhaseSpan, limit+1)
+					var got int
+					var stopped bool
+					s, got, stopped = tr.singlePairWalkRange(input, s, end, fn)
+					if stopped || end > limit {
+						return
+					}
+					if got*64 <= pairPhaseSpan {
+						break
+					}
+				}
+			}
+			candidates = 0
+			anchor = s
 		}
 	}
 }

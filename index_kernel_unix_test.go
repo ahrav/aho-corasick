@@ -1,11 +1,13 @@
-//go:build (arm64 || amd64) && !purego && unix
+//go:build (arm64 || amd64) && !purego && (linux || darwin)
 
 package ahocorasick
 
 // Guard-page proof of the kernels' read contracts: indexPair2 reads
 // p[0 : m&^31 + d], indexOr2 reads p[0 : m&^31]. The buffers end exactly
 // at a PROT_NONE page, so one byte of overread segfaults the test.
-// Separate file: mmap/mprotect exist only on unix.
+// Separate file: the std syscall package exposes Mmap/Mprotect only on
+// linux and darwin among the kernel targets (the BSDs moved them to
+// x/sys).
 
 import (
 	"syscall"
