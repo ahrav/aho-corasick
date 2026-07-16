@@ -16,11 +16,11 @@ import (
 // buildStopByte16Trie builds a trie for patterns and asserts it takes the
 // 16-bit single-stop-byte path that scanRange16 and matchDualStopByte16
 // require.
-func buildStopByte16Trie(t *testing.T, patterns []string) *Trie {
-	t.Helper()
+func buildStopByte16Trie(tb testing.TB, patterns []string) *Trie {
+	tb.Helper()
 	tr := NewTrieBuilder().AddStrings(patterns).Build()
 	if tr.failTrans16 == nil || len(tr.rootStopBytes) != 1 {
-		t.Fatalf("test setup: trie must take the 16-bit single-stop-byte path (failTrans16=%v, stop bytes=%d)",
+		tb.Fatalf("test setup: trie must take the 16-bit single-stop-byte path (failTrans16=%v, stop bytes=%d)",
 			tr.failTrans16 != nil, len(tr.rootStopBytes))
 	}
 	return tr
