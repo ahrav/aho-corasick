@@ -1,6 +1,6 @@
 # Aho-Corasick
 
-[![Build Status](https://travis-ci.com/BobuSumisu/aho-corasick.svg?token=eGRFn5xdQ7p9yby3GVvc&branch=master)](https://travis-ci.com/BobuSumisu/aho-corasick)
+[![CI](https://github.com/ahrav/aho-corasick/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ahrav/aho-corasick/actions/workflows/ci.yml)
 ![Go Version](https://img.shields.io/github/go-mod/go-version/BobuSumisu/aho-corasick)
 ![Latest Tag](https://img.shields.io/github/v/tag/BobuSumisu/aho-corasick)
 
@@ -15,8 +15,8 @@ This implementation does not use a [Double-Array Trie](https://linux.thai.net/~t
 
 This reduces the build time drastically, but at the cost of higher memory consumption.
 
-The search time is still fast, and comparable to other Go implementations I have found on github that claims to be fast
-(see [performance](#Performance)).
+In the linked historical 512k-pattern benchmark, search time was comparable
+to other Go implementations (see [performance](#performance)).
 
 ## Documentation
 
@@ -51,7 +51,7 @@ for _, match := range matches {
 
 // => Matched pattern 0 "or" at position 1.
 // => Matched pattern 0 "or" at position 15.
-// => Matched patterh 1 "amet" at position 22.
+// => Matched pattern 1 "amet" at position 22.
 ```
 
 ## Building
@@ -85,24 +85,11 @@ trie, err := Decode(f)
 
 ## Performance
 
-Some simple benchmarking on my machine (Intel(R) Core(TM) i7-8665U CPU @ 1.90GHz, 32 GiB RAM).
-
-Build and search time grows quite linearly with regards to number of patterns and input text length.
-
-### Building
-
-    BenchmarkTrieBuild/100-4                    7886            154786 ns/op
-    BenchmarkTrieBuild/1000-4                    739           1647419 ns/op
-    BenchmarkTrieBuild/10000-4                    91          13331713 ns/op
-    BenchmarkTrieBuild/100000-4                    9         123886615 ns/op
-
-
-### Searching
-
-    BenchmarkMatchIbsen/100-4                1471089               819 ns/op
-    BenchmarkMatchIbsen/1000-4                202288              5667 ns/op
-    BenchmarkMatchIbsen/10000-4                19957             59680 ns/op
-    BenchmarkMatchIbsen/100000-4                2012            595086 ns/op
+Against upstream commit `b4b5728`, this fork at `1e0b467` reduced
+single-core time by 30% to 98% across six preselected workloads on AWS
+Graviton3. The results use 31 paired process executions per revision. See
+[STOCK-COMPARISON.md](STOCK-COMPARISON.md) for the full results, confidence
+intervals, raw samples, and reproduction protocol.
 
 ### Compared to Other Implementation
 
@@ -111,6 +98,5 @@ See
 
 ### Memory Usage
 
-As mentioned, the memory consumption will be quite high compared to a double-array trie
-implementation. Especially during the build phase (which currently contains a lot of object
-allocations).
+Memory consumption is higher than a double-array trie implementation,
+especially during the build phase.

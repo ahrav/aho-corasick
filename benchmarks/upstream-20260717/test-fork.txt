@@ -1,0 +1,2 @@
+ok  	github.com/BobuSumisu/aho-corasick	3.549s
+?   	github.com/BobuSumisu/aho-corasick/cmd/acbench	[no test files]

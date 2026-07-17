@@ -1,0 +1,155 @@
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8711599 ns/op	 962.92 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8718220 ns/op	 962.19 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8717249 ns/op	 962.30 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     410	   8732467 ns/op	 960.62 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8716663 ns/op	 962.36 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8733429 ns/op	 960.52 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8720384 ns/op	 961.95 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8724698 ns/op	 961.48 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8714404 ns/op	 962.61 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8730740 ns/op	 960.81 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8744054 ns/op	 959.35 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8727371 ns/op	 961.18 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8722568 ns/op	 961.71 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8732361 ns/op	 960.63 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8741172 ns/op	 959.67 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     410	   8742648 ns/op	 959.50 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8723566 ns/op	 961.60 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8723536 ns/op	 961.61 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8732450 ns/op	 960.62 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8721213 ns/op	 961.86 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8722538 ns/op	 961.72 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     412	   8730399 ns/op	 960.85 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8712296 ns/op	 962.85 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8723902 ns/op	 961.57 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8742893 ns/op	 959.48 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8721283 ns/op	 961.85 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8720296 ns/op	 961.96 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8723828 ns/op	 961.57 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8729838 ns/op	 960.91 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8728556 ns/op	 961.05 MB/s	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubLarge_Sorted10k/8192k         	     411	   8730054 ns/op	 960.89 MB/s	       0 B/op	       0 allocs/op
+PASS

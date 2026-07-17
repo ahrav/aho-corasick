@@ -1,0 +1,50 @@
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     276	  13396036 ns/op	34237403 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     272	  13250005 ns/op	34237403 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     270	  13211336 ns/op	34237402 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     274	  12752508 ns/op	34237402 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     264	  13336530 ns/op	34237402 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     274	  13352673 ns/op	34237403 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     268	  13098577 ns/op	34237403 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     277	  13314843 ns/op	34237403 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     270	  13412199 ns/op	34237403 B/op	      32 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubBuild/10000         	     278	  12556267 ns/op	34237402 B/op	      32 allocs/op
+PASS
