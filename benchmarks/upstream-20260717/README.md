@@ -13,9 +13,9 @@ These files support `STOCK-COMPARISON.md`.
   build, and benchmark processes.
 - `environment.txt` and `environment-end.txt`: host, toolchain, affinity,
   hashes, and start/end load. The runner hash identifies the exact collection
-  script. The current runner additionally rejects ignored files and clears and
-  records inherited Go/runtime settings; the archived collection predates
-  those controls.
+  script. The current runner additionally rejects ignored files, clears
+  inherited Go/runtime settings, and records the controlled replacements; the
+  archived collection predates those controls.
 - `matchfirst-benchmem-fork.txt`: one setup-inclusive diagnostic invocation
   with five in-process repetitions. It is excluded from the allocation report
   because the benchmark did not reset its timer after setup.

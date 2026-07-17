@@ -15,6 +15,14 @@ benchmark_cpu=${4:-19}
 [[ "$benchmark_cpu" =~ ^[0-9]+$ ]] || usage
 runner_path=$(realpath "$0")
 
+if [[ "$output_dir" == "$fork_checkout" ||
+    "$output_dir" == "$fork_checkout/"* ||
+    "$output_dir" == "$upstream_checkout" ||
+    "$output_dir" == "$upstream_checkout/"* ]]; then
+    echo "output directory must be outside both checkouts: $output_dir" >&2
+    exit 1
+fi
+
 fork_revision=1e0b4674b45cdb58dc7dafbf3e91d3f48027a6e3
 upstream_revision=b4b5728e36fcc048a77abcea3eb2fcb28c021e2d
 benchmark_hash=e936d64744524c24b1e9bfaecebadb1ba416d4491b8ea4638b2fe59790ba42f3
@@ -45,13 +53,6 @@ run_benchmark_binary() {
 }
 
 run_benchmark_binary true
-
-if [[ -d "$output_dir" && -n $(ls -A "$output_dir") ]]; then
-    echo "output directory is not empty: $output_dir" >&2
-    exit 1
-fi
-mkdir -p "$output_dir"
-: >"$output_dir/commands.log"
 
 check_revision() {
     local checkout=$1
@@ -102,6 +103,13 @@ check_checkout() {
 
 check_checkout "$fork_checkout" "$fork_revision"
 check_checkout "$upstream_checkout" "$upstream_revision"
+
+if [[ -d "$output_dir" && -n $(ls -A "$output_dir") ]]; then
+    echo "output directory is not empty: $output_dir" >&2
+    exit 1
+fi
+mkdir -p "$output_dir"
+: >"$output_dir/commands.log"
 
 printf '%s\tsetup\tfork\ttest\tgo test -count=1 ./...\n' \
     "$(date --iso-8601=seconds)" >>"$output_dir/commands.log"
