@@ -1,0 +1,9 @@
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubMatchFirstLate 	  231666	      5176 ns/op	19782.13 MB/s	      48 B/op	       1 allocs/op
+BenchmarkPubMatchFirstLate 	  231606	      5181 ns/op	19765.17 MB/s	      48 B/op	       1 allocs/op
+BenchmarkPubMatchFirstLate 	  231669	      5174 ns/op	19790.93 MB/s	      48 B/op	       1 allocs/op
+BenchmarkPubMatchFirstLate 	  231600	      5177 ns/op	19778.90 MB/s	      48 B/op	       1 allocs/op
+BenchmarkPubMatchFirstLate 	  231846	      5177 ns/op	19780.69 MB/s	      48 B/op	       1 allocs/op
+PASS

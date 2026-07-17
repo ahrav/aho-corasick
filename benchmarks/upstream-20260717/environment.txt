@@ -1,0 +1,53 @@
+2026-07-17T03:06:08+00:00
+Linux 6.12.94-123.176.amzn2023.aarch64 aarch64
+instance_type=m7g.8xlarge
+go version go1.25.11 X:nodwarf5 linux/arm64
+linux
+arm64
+v8.0
+fork_revision=1e0b4674b45cdb58dc7dafbf3e91d3f48027a6e3
+upstream_revision=b4b5728e36fcc048a77abcea3eb2fcb28c021e2d
+loadavg=1.80 1.78 2.04 3/3789 2068775
+Architecture:                            aarch64
+CPU op-mode(s):                          32-bit, 64-bit
+Byte Order:                              Little Endian
+CPU(s):                                  32
+On-line CPU(s) list:                     0-31
+Vendor ID:                               ARM
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      32
+Socket(s):                               1
+Stepping:                                r1p1
+BogoMIPS:                                2100.00
+Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm paca pacg dcpodp svei8mm svebf16 i8mm bf16 dgh rng
+L1d cache:                               2 MiB (32 instances)
+L1i cache:                               2 MiB (32 instances)
+L2 cache:                                32 MiB (32 instances)
+L3 cache:                                32 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-31
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; CSV2, BHB
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+Cpus_allowed_list:	19
+e936d64744524c24b1e9bfaecebadb1ba416d4491b8ea4638b2fe59790ba42f3  bench_public_test.go
+2d9ad4e5838dc03b438d1881ba52dbb8b6702d9aaf78a979e6a412068e712ae5  test_data/NSF-ordlisten.cleaned.txt
+d5fb85f811c2954ff7bb47d90b72e9140585c99fd2b4e333181de1e2c5a48200  test_data/Ibsen.txt
+27921ba77ed9ebb18f9bd1366fa9fd810330049019413ffc20549778863b2113  run_upstream_benchmark.sh
+f37689c44a3e5f77c44cd6378c20f9b5257270b8eb22a53d35b20f1e3a62dd41  fork.test
+fc2f99782bed21ee8c37c55028851e28f2e4f7508d4da72d2be67dcd35068125  upstream.test

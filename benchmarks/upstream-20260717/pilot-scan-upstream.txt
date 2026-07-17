@@ -1,0 +1,250 @@
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  133783	      4567 ns/op	 224.23 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34206	     18033 ns/op	 227.14 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1346	    455167 ns/op	 224.97 MB/s	   27490 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32959	     18237 ns/op	 224.59 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1231	    463792 ns/op	 220.79 MB/s	   21894 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     626	    956623 ns/op	 107.04 MB/s	  107365 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     266	   2229318 ns/op	 235.18 MB/s	  133086 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9144438 ns/op	 229.34 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36533119 ns/op	 229.62 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1993	    291260 ns/op	 351.58 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     199	   3000491 ns/op	 349.47 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1986	    290985 ns/op	 351.91 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     201	   2973243 ns/op	 352.67 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      52	  10382783 ns/op	   6.31 MB/s	 2057157 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     412	   1321156 ns/op	  49.61 MB/s	   83229 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1774	    311144 ns/op	 329.11 MB/s
+BenchmarkPubWalk/spread-100k          	    1693	    336447 ns/op	 304.36 MB/s
+BenchmarkPubMatchFirstLate            	    2055	    281610 ns/op	 363.62 MB/s
+BenchmarkPubBuild/1000                	      66	  11313767 ns/op	 4641523 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 113076049 ns/op	46379995 B/op	   54261 allocs/op
+BenchmarkPubBuild/100000              	       1	1612598653 ns/op	444484192 B/op	  513565 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  134143	      4528 ns/op	 226.14 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34231	     17993 ns/op	 227.65 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1347	    456081 ns/op	 224.52 MB/s	   27490 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   33002	     18245 ns/op	 224.51 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1267	    463580 ns/op	 220.89 MB/s	   21891 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     628	    953626 ns/op	 107.38 MB/s	  107363 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     268	   2216681 ns/op	 236.52 MB/s	  133071 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9108452 ns/op	 230.24 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36232529 ns/op	 231.52 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1999	    291758 ns/op	 350.98 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     199	   2995539 ns/op	 350.05 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1992	    290123 ns/op	 352.95 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     200	   2981377 ns/op	 351.71 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      54	  10723733 ns/op	   6.11 MB/s	 2194666 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     433	   1315779 ns/op	  49.81 MB/s	   83166 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1832	    310399 ns/op	 329.90 MB/s
+BenchmarkPubWalk/spread-100k          	    1689	    337272 ns/op	 303.61 MB/s
+BenchmarkPubMatchFirstLate            	    2046	    283484 ns/op	 361.22 MB/s
+BenchmarkPubBuild/1000                	      62	  11405872 ns/op	 4641525 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 112732417 ns/op	46377601 B/op	   54261 allocs/op
+BenchmarkPubBuild/100000              	       1	1605662683 ns/op	444443840 B/op	  513564 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  136036	      4493 ns/op	 227.89 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34371	     17885 ns/op	 229.02 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1341	    455978 ns/op	 224.57 MB/s	   27491 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32936	     18208 ns/op	 224.95 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1260	    464561 ns/op	 220.42 MB/s	   21892 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     600	    953110 ns/op	 107.44 MB/s	  107402 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     268	   2214882 ns/op	 236.71 MB/s	  133071 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9097599 ns/op	 230.52 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36203237 ns/op	 231.71 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1980	    291689 ns/op	 351.06 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     198	   2995681 ns/op	 350.03 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1975	    291883 ns/op	 350.83 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     200	   2994296 ns/op	 350.19 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      51	  10443640 ns/op	   6.28 MB/s	 2066653 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     427	   1345960 ns/op	  48.69 MB/s	   83184 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1836	    310347 ns/op	 329.95 MB/s
+BenchmarkPubWalk/spread-100k          	    1682	    336149 ns/op	 304.63 MB/s
+BenchmarkPubMatchFirstLate            	    2049	    283627 ns/op	 361.04 MB/s
+BenchmarkPubBuild/1000                	      58	  11349252 ns/op	 4641549 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 112335033 ns/op	46375512 B/op	   54260 allocs/op
+BenchmarkPubBuild/100000              	       1	1478614434 ns/op	444493760 B/op	  513565 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  134377	      4537 ns/op	 225.72 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34282	     18137 ns/op	 225.84 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1342	    457953 ns/op	 223.60 MB/s	   27490 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32943	     18236 ns/op	 224.61 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1236	    463239 ns/op	 221.05 MB/s	   21894 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     598	    953300 ns/op	 107.42 MB/s	  107405 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     268	   2216253 ns/op	 236.57 MB/s	  133071 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9100649 ns/op	 230.44 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36261919 ns/op	 231.33 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1994	    291644 ns/op	 351.11 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     200	   2995636 ns/op	 350.03 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1995	    290533 ns/op	 352.46 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     201	   2987242 ns/op	 351.02 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      48	  10635541 ns/op	   6.16 MB/s	 2097513 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     435	   1311184 ns/op	  49.98 MB/s	   83161 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1819	    313453 ns/op	 326.68 MB/s
+BenchmarkPubWalk/spread-100k          	    1626	    337815 ns/op	 303.12 MB/s
+BenchmarkPubMatchFirstLate            	    2048	    283070 ns/op	 361.75 MB/s
+BenchmarkPubBuild/1000                	      66	  11434604 ns/op	 4641518 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 113368986 ns/op	46376769 B/op	   54260 allocs/op
+BenchmarkPubBuild/100000              	       1	1623121571 ns/op	444504416 B/op	  513566 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  135937	      4499 ns/op	 227.61 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34412	     18037 ns/op	 227.09 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1347	    454464 ns/op	 225.32 MB/s	   27490 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32964	     18236 ns/op	 224.61 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1264	    463893 ns/op	 220.74 MB/s	   21891 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     606	    953548 ns/op	 107.39 MB/s	  107393 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     268	   2216950 ns/op	 236.49 MB/s	  133071 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9108091 ns/op	 230.25 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36252408 ns/op	 231.39 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1976	    292127 ns/op	 350.53 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     198	   2983560 ns/op	 351.45 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1978	    293368 ns/op	 349.05 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     200	   2994360 ns/op	 350.18 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      54	  10333409 ns/op	   6.34 MB/s	 2039221 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     421	   1351652 ns/op	  48.49 MB/s	   83201 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1837	    310576 ns/op	 329.71 MB/s
+BenchmarkPubWalk/spread-100k          	    1627	    337348 ns/op	 303.54 MB/s
+BenchmarkPubMatchFirstLate            	    2001	    284452 ns/op	 359.99 MB/s
+BenchmarkPubBuild/1000                	      66	  11350831 ns/op	 4641471 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 110740363 ns/op	46379508 B/op	   54261 allocs/op
+BenchmarkPubBuild/100000              	       1	1534793259 ns/op	444531168 B/op	  513565 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  134036	      4536 ns/op	 225.75 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34314	     17981 ns/op	 227.79 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1342	    455843 ns/op	 224.64 MB/s	   27490 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32964	     18233 ns/op	 224.65 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1264	    463714 ns/op	 220.83 MB/s	   21891 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     606	    952641 ns/op	 107.49 MB/s	  107393 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     267	   2216763 ns/op	 236.51 MB/s	  133079 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9122237 ns/op	 229.89 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36326806 ns/op	 230.92 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1993	    291482 ns/op	 351.31 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     199	   2998943 ns/op	 349.65 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1977	    290827 ns/op	 352.10 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     200	   2982633 ns/op	 351.56 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      54	  10329545 ns/op	   6.34 MB/s	 2039221 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     422	   1368015 ns/op	  47.91 MB/s	   83198 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1821	    314122 ns/op	 325.99 MB/s
+BenchmarkPubWalk/spread-100k          	    1684	    337259 ns/op	 303.62 MB/s
+BenchmarkPubMatchFirstLate            	    2042	    284104 ns/op	 360.43 MB/s
+BenchmarkPubBuild/1000                	      66	  11348929 ns/op	 4641529 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 111850449 ns/op	46380254 B/op	   54261 allocs/op
+BenchmarkPubBuild/100000              	       1	1590494949 ns/op	444505952 B/op	  513565 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  134475	      4551 ns/op	 224.99 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34238	     18011 ns/op	 227.42 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1346	    456034 ns/op	 224.54 MB/s	   27490 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   33033	     18224 ns/op	 224.75 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1267	    463369 ns/op	 220.99 MB/s	   21891 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     601	    951616 ns/op	 107.61 MB/s	  107401 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     268	   2216258 ns/op	 236.56 MB/s	  133071 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      64	   8943188 ns/op	 234.50 MB/s	  548970 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  35995939 ns/op	 233.04 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1974	    293727 ns/op	 348.62 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     196	   2987621 ns/op	 350.97 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1978	    293900 ns/op	 348.42 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     199	   2992721 ns/op	 350.38 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      54	  10279843 ns/op	   6.38 MB/s	 2039221 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     436	   1325592 ns/op	  49.44 MB/s	   83158 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1791	    309745 ns/op	 330.59 MB/s
+BenchmarkPubWalk/spread-100k          	    1689	    336592 ns/op	 304.23 MB/s
+BenchmarkPubMatchFirstLate            	    2048	    281025 ns/op	 364.38 MB/s
+BenchmarkPubBuild/1000                	      66	  11372146 ns/op	 4641540 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 111668186 ns/op	46376580 B/op	   54261 allocs/op
+BenchmarkPubBuild/100000              	       1	1577203257 ns/op	444470336 B/op	  513565 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  134312	      4510 ns/op	 227.06 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34375	     18038 ns/op	 227.07 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1350	    454893 ns/op	 225.11 MB/s	   27489 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32953	     18222 ns/op	 224.78 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1269	    464066 ns/op	 220.66 MB/s	   21891 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     625	    956046 ns/op	 107.11 MB/s	  107367 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     268	   2215193 ns/op	 236.68 MB/s	  133071 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9094044 ns/op	 230.61 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36219910 ns/op	 231.60 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1974	    292083 ns/op	 350.58 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     199	   2994122 ns/op	 350.21 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1984	    292381 ns/op	 350.23 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     200	   2981968 ns/op	 351.64 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      52	  10359150 ns/op	   6.33 MB/s	 2057157 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     411	   1345012 ns/op	  48.73 MB/s	   83232 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1845	    309546 ns/op	 330.81 MB/s
+BenchmarkPubWalk/spread-100k          	    1687	    336663 ns/op	 304.16 MB/s
+BenchmarkPubMatchFirstLate            	    2035	    281537 ns/op	 363.72 MB/s
+BenchmarkPubBuild/1000                	      62	  11459728 ns/op	 4641500 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 112822403 ns/op	46373444 B/op	   54260 allocs/op
+BenchmarkPubBuild/100000              	       1	1517589761 ns/op	444473792 B/op	  513565 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  135291	      4550 ns/op	 225.05 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34363	     18047 ns/op	 226.96 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1347	    444689 ns/op	 230.27 MB/s	   27490 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32938	     18223 ns/op	 224.77 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1263	    464390 ns/op	 220.50 MB/s	   21891 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     604	    956252 ns/op	 107.08 MB/s	  107396 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     267	   2219597 ns/op	 236.21 MB/s	  133079 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9124715 ns/op	 229.83 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36369214 ns/op	 230.65 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1968	    291836 ns/op	 350.88 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     198	   2991053 ns/op	 350.57 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1976	    292836 ns/op	 349.68 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     200	   2981282 ns/op	 351.72 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      51	  10357185 ns/op	   6.33 MB/s	 2066653 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     432	   1319671 ns/op	  49.66 MB/s	   83169 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1843	    310709 ns/op	 329.57 MB/s
+BenchmarkPubWalk/spread-100k          	    1700	    334841 ns/op	 305.82 MB/s
+BenchmarkPubMatchFirstLate            	    2047	    280839 ns/op	 364.62 MB/s
+BenchmarkPubBuild/1000                	      58	  11609494 ns/op	 4641522 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 112300772 ns/op	46378811 B/op	   54261 allocs/op
+BenchmarkPubBuild/100000              	       1	1606395397 ns/op	444507840 B/op	  513565 allocs/op
+PASS
+goos: linux
+goarch: arm64
+pkg: github.com/BobuSumisu/aho-corasick
+BenchmarkPubText_Sorted10k/1k         	  135889	      4496 ns/op	 227.74 MB/s	     280 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/4k         	   34448	     18000 ns/op	 227.56 MB/s	    1176 B/op	       2 allocs/op
+BenchmarkPubText_Sorted10k/100k       	    1351	    453984 ns/op	 225.56 MB/s	   27489 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/4k         	   32974	     18211 ns/op	 224.92 MB/s	     920 B/op	       2 allocs/op
+BenchmarkPubText_Spread10k/100k       	    1269	    463658 ns/op	 220.85 MB/s	   21891 B/op	       2 allocs/op
+BenchmarkPubText_Big100k/100k         	     598	    954889 ns/op	 107.24 MB/s	  107405 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/512k      	     267	   2216147 ns/op	 236.58 MB/s	  133079 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/2048k     	      56	   9118714 ns/op	 229.98 MB/s	  553663 B/op	       2 allocs/op
+BenchmarkPubLarge_Sorted10k/8192k     	      15	  36254131 ns/op	 231.38 MB/s	 2599432 B/op	       4 allocs/op
+BenchmarkPubNoMatch/sorted-100k       	    1986	    291030 ns/op	 351.85 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/sorted-1m         	     199	   2988714 ns/op	 350.85 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-100k       	    1992	    290462 ns/op	 352.54 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubNoMatch/spread-1m         	     200	   2989331 ns/op	 350.77 MB/s	      24 B/op	       1 allocs/op
+BenchmarkPubDense/ab-64k              	      51	  10232648 ns/op	   6.40 MB/s	 2066653 B/op	       4 allocs/op
+BenchmarkPubConcat/64k                	     436	   1305821 ns/op	  50.19 MB/s	   83158 B/op	       2 allocs/op
+BenchmarkPubWalk/sorted-100k          	    1778	    310953 ns/op	 329.31 MB/s
+BenchmarkPubWalk/spread-100k          	    1681	    335816 ns/op	 304.93 MB/s
+BenchmarkPubMatchFirstLate            	    2020	    279592 ns/op	 366.25 MB/s
+BenchmarkPubBuild/1000                	      60	  11340100 ns/op	 4641475 B/op	    5513 allocs/op
+BenchmarkPubBuild/10000               	       5	 113156896 ns/op	46377336 B/op	   54261 allocs/op
+BenchmarkPubBuild/100000              	       1	1625868292 ns/op	444467648 B/op	  513564 allocs/op
+PASS

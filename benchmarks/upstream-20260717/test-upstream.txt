@@ -1,0 +1,1 @@
+ok  	github.com/BobuSumisu/aho-corasick	0.379s

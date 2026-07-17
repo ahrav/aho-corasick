@@ -1,92 +1,126 @@
-# Stock vs optimized: full before/after comparison
+# Upstream performance comparison
 
-**Before:** stock upstream `BobuSumisu/aho-corasick` @ b4b5728 (v1.0.3, no
-fork optimizations of any kind).
-**After:** this fork's full chain tip (`perf/26-builder-index-fusion`,
-master + PRs #3–#10 + the 19-branch stack #11–#29).
+This compares upstream `BobuSumisu/aho-corasick` at `b4b5728` with this fork
+at `1e0b467`. The upstream commit is 12 commits after v1.0.3 (`58861e9`).
+Both revisions used the same public-API benchmark source and byte-identical
+corpora.
 
-**Machine:** AMD EPYC 9R14 (Zen 4), 48 cores, Go 1.25.11, linux/amd64.
-**Stability:** load average 0.9–1.0 at start (idle but for the session
-agent), no other benchmark processes, no cpufreq scaling exposed (fixed-
-frequency VM). Interleaved A/B binaries; benchstat n=8; hyperfine 10+ runs
-with warmup. Dispersion: benchstat CIs mostly ≤3%, hyperfine σ ≤3.5% —
-consistent with a quiet machine.
+## Results
 
-**Fairness:** identical public-API-only benchmark source compiled against
-both trees (`bench_public_test.go`, pub-prefixed; no internals touched).
-Cross-version semantics verified: both binaries report identical match
-counts on every workload (e.g. 6,178 on Ibsen/10k-dict; 110,249 on the
-400MB spread scan).
+All primary results use one pinned AWS Graviton3 core. Times are medians
+across 31 separate process executions per revision. Reductions are geometric
+means of paired time ratios. The table reports Bonferroni-adjusted 99.1667%
+percentile-bootstrap intervals, giving nominal 95% simultaneous coverage
+across the six endpoints.
 
-## benchstat (Go microbenchmarks, n=8 interleaved)
+| Workload | Upstream median | Fork median | Time reduction (99.1667% CI) |
+|---|---:|---:|---:|
+| Natural text, spread 10k dictionary, 100 KiB | 464.921 us | 325.286 us | 30.02% (29.95% to 30.09%) |
+| No match, spread 10k dictionary, 1 MiB | 2.983 ms | 336.482 us | 88.72% (88.71% to 88.73%) |
+| Dense overlapping matches, 64 KiB | 10.626 ms | 897.377 us | 91.51% (91.45% to 91.57%) |
+| `MatchFirst`, late match in 100 KiB | 282.567 us | 5.177 us | 98.17% (98.16% to 98.17%) |
+| Build 10k-pattern trie | 111.702 ms | 13.124 ms | 88.26% (88.11% to 88.41%) |
+| Natural text, sorted 10k dictionary, 8 MiB | 37.780 ms | 8.724 ms | 76.87% (76.81% to 76.92%) |
 
-**geomean: −90.2% (10.2x)**
+The reported `Match` scan rows had zero allocations per operation in the fork
+and one to four upstream. `MatchFirst` allocation traffic is omitted because
+its setup ran before the timed loop without a timer reset, making the
+setup-inclusive per-operation values non-comparable. The 10k-pattern build
+reported 32 allocations in the fork and about 54,261 upstream.
 
-| Benchmark | stock | tip | Δ |
-|---|---|---|---|
-| Text sorted-dict 1KB | 2.87µs | 435ns | **−84.9%** |
-| Text sorted-dict 4KB | 11.7µs | 1.78µs | **−84.8%** |
-| Text sorted-dict 100KB | 322µs | 45.2µs | **−86.0%** |
-| Text spread-dict 4KB | 12.8µs | 6.27µs | **−51.1%** |
-| Text spread-dict 100KB | 348µs | 88.4µs | **−74.6%** |
-| Text 100k-pattern dict 100KB | 728µs | 160µs | **−78.0%** |
-| Large input 512KB | 1.65ms | 189µs | **−88.5%** |
-| Large input 2MB | 6.62ms | 429µs | **−93.5%** |
-| Large input 8MB | 28.3ms | 1.34ms | **−95.3% (21x)** |
-| No-match 100KB (sorted) | 198µs | 1.20µs | **−99.4% (165x)** |
-| No-match 1MB (sorted) | 2.02ms | 30.8µs | **−98.5%** |
-| No-match 100KB (spread) | 197µs | 25.4µs | **−87.1%** |
-| No-match 1MB (spread) | 2.02ms | 79.0µs | **−96.1%** |
-| Dense overlaps 64KB | 6.49ms | 1.15ms | **−82.3%** |
-| Concatenated words 64KB | 1.18ms | 181µs | **−84.7%** |
-| Walk sorted-dict 100KB | 233µs | 38.1µs | **−83.7%** |
-| Walk spread-dict 100KB | 266µs | 141µs | **−46.8%** |
-| MatchFirst (late needle) | 201µs | 28.4µs | **−85.9%** |
-| Build 1k patterns | 15.9ms | 970µs | **−93.9%** |
-| Build 10k patterns | 163ms | 8.2ms | **−95.0%** |
-| Build 100k patterns | 2.27s | 92.6ms | **−95.9% (24.5x)** |
+These numbers describe these workloads on this machine. They are not a suite
+geomean or an end-to-end application claim.
 
-Allocations per Match call: **−94…−100%** on every match workload (the
-pool + arena machinery; e.g. Dense 64KB: 2.24MB/op → 13KB/op, sorted-text
-scans: zero allocations at steady state). Build allocations −26…−44%.
-The only rows with allocation increases are no-match inputs above the
-parallel threshold (+3.7KB/op of worker scratch on 1MB inputs — noise
-against the 25x speed win there).
+## Experiment design
 
-## hyperfine (whole-process wall clock, warmup + 10 runs)
+- Machine: AWS `m7g.8xlarge` (Graviton3), Linux arm64.
+- Toolchain: Go 1.25.11.
+- Experimental unit: one benchmark process execution.
+- Pairing: upstream and fork ran in adjacent blocks, alternating order
+  `upstream/fork` then `fork/upstream`.
+- CPU control: `taskset -c 19`, `GOMAXPROCS=1`, and `-test.cpu=1`.
+- Final timing: 1 second for scan benchmarks; 3 seconds for build and the
+  8 MiB scan. The excluded pilot used 500 milliseconds for scans.
+- Warmup: Go's benchmark calibration ran before each reported measurement.
+- Stopping: fixed at 31 executions per revision before final collection.
+- Timing exclusions: none. The setup-inclusive `MatchFirst` allocation
+  diagnostic is omitted from allocation comparisons.
+- Reproduction controls: the current runner rejects ignored checkout files
+  and clears inherited build/runtime settings before invoking Go. The archived
+  collection predates that hardening; its runner hash and recorded environment
+  identify the controls captured at collection time.
 
-| Scenario | stock | tip | Speedup |
-|---|---|---|---|
-| Build 100k-pattern trie | 2.477s ± 34ms | 312.7ms ± 8.7ms | **7.9x** |
-| Scan 400MB prose, sorted dict | 1.554s ± 5ms | 306.0ms ± 10.6ms | **5.1x** |
-| Scan 400MB prose, spread dict | 2.26s | 513.8ms ± 2.4ms | **4.4x** |
-| Cold end-to-end (build 10k + scan Ibsen once) | 276ms | 113.8ms ± 5.7ms | **2.4x** |
+A separate 10-pair pilot estimated per-execution CV. Sizing assumed a more
+conservative 5% CV, a 5% minimum detectable effect, 90% power, and
+`alpha=0.05/6` for six primary endpoints:
 
-(Whole-process numbers include Go runtime startup and pattern-file
-loading, which is why the cold e2e ratio is smaller than the library-only
-ratios.)
+```text
+n = ceil(2 * (z_(1-alpha/2) + z_(1-beta))^2 * (CV/MDE)^2) = 31
+```
 
-## Where the wins come from (chain attribution)
+Final primary-endpoint sample CV was at most 2.74%. For analysis, each pair
+produced `log(fork_time / upstream_time)`. The fork/upstream geometric mean
+time ratio is the exponentiated mean log ratio; the reported reduction is
+`100 * (1 - exp(mean(log ratio)))`. Intervals use 500,000 paired percentile
+bootstrap resamples from NumPy's `Generator(PCG64)`, seed `20260717`, and
+linear quantiles. The recorded environment used Python 3.9.25, NumPy 2.0.2,
+and SciPy 1.13.1.
 
-- **No-match / long-gap 165x:** SWAR + vectorized IndexByte root skipping,
-  windowed multi-stop escape, density-aware parallel dispatch.
-- **Build 24.5x:** row-copy DP construction, index-based value-struct
-  states with inline flags/failTrans16 fusion (vs stock's per-(state,byte)
-  fail-chain walks through per-node maps).
-- **Large inputs 21x:** parallel scan with per-worker segment materialize
-  and size/liveliness-scaled worker caps (stock is single-threaded).
-- **Text scans 4–7x:** devirtualized specialized loops, 16-bit half-width
-  tables, stop-entry constant, dual-cursor scans, branchless skip locate.
-- **Dense/overlap-heavy 5.6x:** dual-cursor + byte-class-compressed table
-  + pooled zero-allocation buffers.
-- **Allocation elimination:** pooled match buffers and arena
-  materialization (stock allocates every Match struct and slice per call).
+At `alpha=0.05`, a Welch test comparing log ratios by first arm did not
+detect a statistically significant order effect (`p=0.185` to `0.985`).
+Spearman tests did not detect a statistically significant monotonic trend
+across pair number (`p=0.308` to `0.952`).
+
+## Integrity
+
+Both revisions passed `go test -count=1 ./...`. The benchmark source, corpus,
+build flags, and toolchain were identical. Both binaries used
+`-trimpath -buildvcs=false`. The
+[raw pilot and primary samples](benchmarks/upstream-20260717/) are included
+with the report, including the environment, every command timestamp, and
+fresh test output from both revisions.
+
+| Input | SHA-256 |
+|---|---|
+| `bench_public_test.go` | `e936d64744524c24b1e9bfaecebadb1ba416d4491b8ea4638b2fe59790ba42f3` |
+| `test_data/NSF-ordlisten.cleaned.txt` | `2d9ad4e5838dc03b438d1881ba52dbb8b6702d9aaf78a979e6a412068e712ae5` |
+| `test_data/Ibsen.txt` | `d5fb85f811c2954ff7bb47d90b72e9140585c99fd2b4e333181de1e2c5a48200` |
 
 ## Reproduction
 
-- `bench_public_test.go` (this directory) compiles unmodified against
-  both trees; run with `-bench Pub -count 8` per tree and compare with
-  benchstat.
-- `cmd/acbench` builds against both trees for the hyperfine scenarios:
-  `hyperfine -N --warmup 2 './acbench-stock build 100000 1' './acbench-tip build 100000 1'`
-  etc. `ACBENCH_DATA` points at `test_data/`.
+Prepare checkouts at the two revisions above. Add the fork's
+`bench_public_test.go` unchanged to the upstream checkout, then run:
+
+```bash
+tools/run_upstream_benchmark.sh \
+  /path/to/fork-at-1e0b467 \
+  /path/to/upstream-at-b4b5728 \
+  /tmp/aho-upstream-comparison \
+  19
+```
+
+The runner verifies revisions and input hashes, records the environment and
+commands, executes the excluded 10-pair pilot, then collects 31 final pairs
+without invoking the analyzer. The optional final argument selects one logical
+CPU and defaults to `19` for this archived run; choose an allowed CPU on other
+hosts. The runner validates and records the selected CPU. Analyze the completed
+output with:
+
+```bash
+python3 tools/analyze_upstream_benchmark.py \
+  /tmp/aho-upstream-comparison
+```
+
+The committed analyzer defines endpoint ordering, sample CV, paired
+percentile bootstrap, PRNG, quantile method, and diagnostic tests.
+Its Python dependencies are pinned in `tools/benchmark-requirements.txt`.
+
+`benchstat` provides an independent nonparametric summary:
+
+```bash
+benchstat \
+  -alpha 0.008333333333333333 \
+  -confidence 0.9916666666666667 \
+  /tmp/aho-upstream-comparison/final-scan-upstream.txt \
+  /tmp/aho-upstream-comparison/final-scan-fork.txt
+```

@@ -1,0 +1,36 @@
+python=3.9.25 numpy=2.0.2 scipy=1.13.1
+planned_samples=31 resamples=500000 seed=20260717
+
+| Workload | Upstream | Fork | Reduction (99.1667% CI) |
+|---|---:|---:|---:|
+| Natural text, spread 10k, 100 KiB | 464.921 us | 325.286 us | 30.023% (29.945% to 30.093%) |
+| No match, spread 10k, 1 MiB | 2.983 ms | 336.482 us | 88.716% (88.705% to 88.728%) |
+| Dense overlaps, 64 KiB | 10.626 ms | 897.377 us | 91.511% (91.452% to 91.568%) |
+| MatchFirst, late match, 100 KiB | 282.567 us | 5.177 us | 98.167% (98.161% to 98.173%) |
+| Build 10k-pattern trie | 111.702 ms | 13.124 ms | 88.262% (88.107% to 88.408%) |
+| Natural text, sorted 10k, 8 MiB | 37.780 ms | 8.724 ms | 76.871% (76.811% to 76.918%) |
+
+| Workload | Upstream CV | Fork CV | Order p | Trend p |
+|---|---:|---:|---:|---:|
+| Natural text, spread 10k, 100 KiB | 0.127% | 0.157% | 0.185 | 0.474 |
+| No match, spread 10k, 1 MiB | 0.218% | 0.135% | 0.985 | 0.952 |
+| Dense overlaps, 64 KiB | 1.432% | 0.240% | 0.818 | 0.855 |
+| MatchFirst, late match, 100 KiB | 0.683% | 0.077% | 0.401 | 0.696 |
+| Build 10k-pattern trie | 0.354% | 2.733% | 0.363 | 0.551 |
+| Natural text, sorted 10k, 8 MiB | 0.457% | 0.100% | 0.906 | 0.308 |
+
+| Workload | Upstream nominal MB/s | Fork nominal MB/s |
+|---|---:|---:|
+| Natural text, spread 10k, 100 KiB | 220.25 | 314.80 |
+| No match, spread 10k, 1 MiB | 351.56 | 3116.29 |
+| Dense overlaps, 64 KiB | 6.17 | 73.03 |
+| MatchFirst, late match, 100 KiB | 362.39 | 19781.19 |
+| Natural text, sorted 10k, 8 MiB | 222.04 | 961.57 |
+
+| Workload | Upstream B/op | Fork B/op | Upstream allocs/op | Fork allocs/op |
+|---|---:|---:|---:|---:|
+| Natural text, spread 10k, 100 KiB | 21,839 | 0 | 2 | 0 |
+| No match, spread 10k, 1 MiB | 24 | 0 | 1 | 0 |
+| Dense overlaps, 64 KiB | 2,039,221 | 0 | 4 | 0 |
+| Build 10k-pattern trie | 46,378,952 | 34,237,402 | 54,261 | 32 |
+| Natural text, sorted 10k, 8 MiB | 2,454,350 | 0 | 3 | 0 |
