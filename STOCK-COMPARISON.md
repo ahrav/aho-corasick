@@ -53,8 +53,9 @@ n = ceil(2 * (z_(1-alpha/2) + z_(1-beta))^2 * (CV/MDE)^2) = 31
 ```
 
 Final primary-endpoint sample CV was at most 2.74%. For analysis, each pair
-produced `log(fork_time / upstream_time)`. The point estimate is the
-exponentiated mean log ratio. Intervals use 500,000 paired percentile
+produced `log(fork_time / upstream_time)`. The fork/upstream geometric mean
+time ratio is the exponentiated mean log ratio; the reported reduction is
+`100 * (1 - exp(mean(log ratio)))`. Intervals use 500,000 paired percentile
 bootstrap resamples from NumPy's `Generator(PCG64)`, seed `20260717`, and
 linear quantiles. The recorded environment used Python 3.9.25, NumPy 2.0.2,
 and SciPy 1.13.1.

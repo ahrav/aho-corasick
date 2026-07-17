@@ -15,8 +15,7 @@ This implementation does not use a [Double-Array Trie](https://linux.thai.net/~t
 
 This reduces the build time drastically, but at the cost of higher memory consumption.
 
-In the linked historical 512k-pattern benchmark, search time was comparable
-to other Go implementations (see [performance](#performance)).
+See [Performance](#performance) for current benchmark results.
 
 ## Documentation
 

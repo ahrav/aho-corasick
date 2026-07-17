@@ -77,8 +77,9 @@ printf '%s\tsetup\tfork\ttest\tgo test -count=1 ./...\n' \
     cd "$fork_checkout"
     go test -count=1 ./...
 ) >"$output_dir/test-fork.txt" 2>&1
-printf '%s\tsetup\tfork\tbuild\tgo test -c -trimpath -buildvcs=false\n' \
-    "$(date --iso-8601=seconds)" >>"$output_dir/commands.log"
+printf '%s\tsetup\tfork\tbuild\tgo test -c -trimpath -buildvcs=false -o %q .\n' \
+    "$(date --iso-8601=seconds)" "$output_dir/fork.test" \
+    >>"$output_dir/commands.log"
 (
     cd "$fork_checkout"
     go test -c -trimpath -buildvcs=false -o "$output_dir/fork.test" .
@@ -90,8 +91,9 @@ printf '%s\tsetup\tupstream\ttest\tgo test -count=1 ./...\n' \
     cd "$upstream_checkout"
     go test -count=1 ./...
 ) >"$output_dir/test-upstream.txt" 2>&1
-printf '%s\tsetup\tupstream\tbuild\tgo test -c -trimpath -buildvcs=false\n' \
-    "$(date --iso-8601=seconds)" >>"$output_dir/commands.log"
+printf '%s\tsetup\tupstream\tbuild\tgo test -c -trimpath -buildvcs=false -o %q .\n' \
+    "$(date --iso-8601=seconds)" "$output_dir/upstream.test" \
+    >>"$output_dir/commands.log"
 (
     cd "$upstream_checkout"
     go test -c -trimpath -buildvcs=false -o "$output_dir/upstream.test" .
@@ -159,7 +161,6 @@ run_benchmark() {
 }
 
 scan_bench='^(BenchmarkPubText_Spread10k|BenchmarkPubNoMatch|BenchmarkPubDense|BenchmarkPubMatchFirstLate)$'
-pilot_scan_bench='^BenchmarkPub'
 build_bench='^BenchmarkPubBuild$/^10000$'
 large_bench='^BenchmarkPubLarge_Sorted10k$/^8192k$'
 
@@ -243,7 +244,7 @@ run_matchfirst_allocation_check() {
 }
 
 # Pilot samples are excluded from final inference.
-run_primary_stage pilot 10 500ms "$pilot_scan_bench"
+run_primary_stage pilot 10 500ms "$scan_bench"
 run_large_stage pilot 10
 
 # The fixed stopping rule is 31 executions per arm.
