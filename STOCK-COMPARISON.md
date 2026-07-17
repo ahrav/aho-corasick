@@ -23,8 +23,8 @@ across the six endpoints.
 | Natural text, sorted 10k dictionary, 8 MiB | 37.780 ms | 8.724 ms | 76.87% (76.81% to 76.92%) |
 
 The four `Match` scan endpoints reported zero allocations per operation in
-the fork and one to four upstream. `MatchFirst` reported one 48-byte
-allocation in the fork in a separate `-benchmem` check. The 10k-pattern
+the fork and one to four upstream. `MatchFirst` reported one allocation in
+both revisions: 37 B/op upstream and 48 B/op in the fork. The 10k-pattern
 build reported 32 allocations in the fork and about 54,261 upstream.
 
 These numbers describe these workloads on this machine. They are not a suite

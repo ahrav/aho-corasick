@@ -101,6 +101,34 @@ Times are medians across 31 paired process executions per revision. See
 [STOCK-COMPARISON.md](STOCK-COMPARISON.md) for confidence intervals, raw
 samples, and the reproduction protocol.
 
+### Scan Throughput
+
+| Workload | Upstream | Fork |
+|---|---:|---:|
+| Natural text, spread 10k dictionary, 100 KiB | 220.25 MB/s | 314.80 MB/s |
+| No match, spread 10k dictionary, 1 MiB | 351.56 MB/s | 3,116.29 MB/s |
+| Dense overlapping matches, 64 KiB | 6.17 MB/s | 73.03 MB/s |
+| `MatchFirst`, late match in 100 KiB | 362.39 MB/s | 19,781.19 MB/s |
+| Natural text, sorted 10k dictionary, 8 MiB | 222.04 MB/s | 961.57 MB/s |
+
+Throughput is bytes processed per second for each fixed-size scan. It is not
+an application capacity measurement.
+
+### Allocation Traffic
+
+| Workload | Upstream B/op | Fork B/op | Upstream allocs/op | Fork allocs/op |
+|---|---:|---:|---:|---:|
+| Natural text, spread 10k dictionary, 100 KiB | 21,839 | 0 | 2 | 0 |
+| No match, spread 10k dictionary, 1 MiB | 24 | 0 | 1 | 0 |
+| Dense overlapping matches, 64 KiB | 2,039,221 | 0 | 4 | 0 |
+| `MatchFirst`, late match in 100 KiB | 37 | 48 | 1 | 1 |
+| Build 10k-pattern trie | 46,378,952 | 34,237,402 | 54,261 | 32 |
+| Natural text, sorted 10k dictionary, 8 MiB | 2,454,350 | 0 | 3 | 0 |
+
+`B/op` measures allocation traffic per operation, not retained trie memory or
+peak process memory. `MatchFirst` uses separate five-execution allocation
+checks; other rows use the 31 primary executions.
+
 ### Compared to Other Implementation
 
 See

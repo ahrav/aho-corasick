@@ -9,11 +9,15 @@ These files support `STOCK-COMPARISON.md`.
 - `final-order.tsv` and `final-large1-order.tsv`: first arm and timestamp for
   each paired block.
 - `analysis.txt`: output from the committed analyzer.
-- `commands.log`: timestamp and parameters for every test, build, and
-  benchmark process.
+- `commands.log`: timestamps and parameters for the main collection's test,
+  build, and benchmark processes.
 - `environment.txt` and `environment-end.txt`: host, toolchain, affinity,
-  hashes, and start/end load.
-- `matchfirst-benchmem-fork.txt`: separate allocation check for `MatchFirst`.
+  hashes, and start/end load. The runner hash identifies the exact collection
+  script; the current runner includes later reproduction and logging fixes.
+- `matchfirst-benchmem-{upstream,fork}.txt`: separate five-execution
+  allocation checks for `MatchFirst`. The supplemental upstream check reused
+  the archived `upstream.test` binary after verifying its SHA-256 against
+  `environment.txt`.
 - `test-fork.txt` and `test-upstream.txt`: fresh `go test -count=1 ./...`
   output from the measured revisions.
 

@@ -227,20 +227,30 @@ run_large_stage() {
 }
 
 run_matchfirst_allocation_check() {
-    local output=matchfirst-benchmem-fork.txt
-    printf '%s\tfork\t%s\t%s\t1s\tcount=5,benchmem\n' \
-        "$(date --iso-8601=seconds)" "$output" '^BenchmarkPubMatchFirstLate$' \
-        >>"$output_dir/commands.log"
-    (
-        cd "$fork_checkout"
-        taskset -c 19 env GOMAXPROCS=1 "$output_dir/fork.test" \
-            -test.run='^$' \
-            -test.bench='^BenchmarkPubMatchFirstLate$' \
-            -test.benchtime=1s \
-            -test.cpu=1 \
-            -test.count=5 \
-            -test.benchmem
-    ) >"$output_dir/$output" 2>&1
+    local arm checkout binary output
+    for arm in upstream fork; do
+        if [[ "$arm" == fork ]]; then
+            checkout=$fork_checkout
+            binary=$output_dir/fork.test
+        else
+            checkout=$upstream_checkout
+            binary=$output_dir/upstream.test
+        fi
+        output=matchfirst-benchmem-$arm.txt
+        printf '%s\t%s\t%s\t%s\t1s\tcount=5,benchmem\n' \
+            "$(date --iso-8601=seconds)" "$arm" "$output" \
+            '^BenchmarkPubMatchFirstLate$' >>"$output_dir/commands.log"
+        (
+            cd "$checkout"
+            taskset -c 19 env GOMAXPROCS=1 "$binary" \
+                -test.run='^$' \
+                -test.bench='^BenchmarkPubMatchFirstLate$' \
+                -test.benchtime=1s \
+                -test.cpu=1 \
+                -test.count=5 \
+                -test.benchmem
+        ) >"$output_dir/$output" 2>&1
+    done
 }
 
 # Pilot samples are excluded from final inference.

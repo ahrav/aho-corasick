@@ -18,3 +18,20 @@ planned_samples=31 resamples=500000 seed=20260717
 | MatchFirst, late match, 100 KiB | 0.683% | 0.077% | 0.401 | 0.696 |
 | Build 10k-pattern trie | 0.354% | 2.733% | 0.363 | 0.551 |
 | Natural text, sorted 10k, 8 MiB | 0.457% | 0.100% | 0.906 | 0.308 |
+
+| Workload | Upstream MB/s | Fork MB/s |
+|---|---:|---:|
+| Natural text, spread 10k, 100 KiB | 220.25 | 314.80 |
+| No match, spread 10k, 1 MiB | 351.56 | 3116.29 |
+| Dense overlaps, 64 KiB | 6.17 | 73.03 |
+| MatchFirst, late match, 100 KiB | 362.39 | 19781.19 |
+| Natural text, sorted 10k, 8 MiB | 222.04 | 961.57 |
+
+| Workload | Upstream B/op | Fork B/op | Upstream allocs/op | Fork allocs/op |
+|---|---:|---:|---:|---:|
+| Natural text, spread 10k, 100 KiB | 21,839 | 0 | 2 | 0 |
+| No match, spread 10k, 1 MiB | 24 | 0 | 1 | 0 |
+| Dense overlaps, 64 KiB | 2,039,221 | 0 | 4 | 0 |
+| MatchFirst, late match, 100 KiB | 37 | 48 | 1 | 1 |
+| Build 10k-pattern trie | 46,378,952 | 34,237,402 | 54,261 | 32 |
+| Natural text, sorted 10k, 8 MiB | 2,454,350 | 0 | 3 | 0 |
