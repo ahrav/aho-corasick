@@ -86,9 +86,20 @@ trie, err := Decode(f)
 
 Against upstream commit `b4b5728`, this fork at `1e0b467` reduced
 single-core time by 30% to 98% across six preselected workloads on AWS
-Graviton3. The results use 31 paired process executions per revision. See
-[STOCK-COMPARISON.md](STOCK-COMPARISON.md) for the full results, confidence
-intervals, raw samples, and reproduction protocol.
+Graviton3.
+
+| Workload | Upstream | Fork | Time reduction |
+|---|---:|---:|---:|
+| Natural text, spread 10k dictionary, 100 KiB | 464.921 us | 325.286 us | 30.02% |
+| No match, spread 10k dictionary, 1 MiB | 2.983 ms | 336.482 us | 88.72% |
+| Dense overlapping matches, 64 KiB | 10.626 ms | 897.377 us | 91.51% |
+| `MatchFirst`, late match in 100 KiB | 282.567 us | 5.177 us | 98.17% |
+| Build 10k-pattern trie | 111.702 ms | 13.124 ms | 88.26% |
+| Natural text, sorted 10k dictionary, 8 MiB | 37.780 ms | 8.724 ms | 76.87% |
+
+Times are medians across 31 paired process executions per revision. See
+[STOCK-COMPARISON.md](STOCK-COMPARISON.md) for confidence intervals, raw
+samples, and the reproduction protocol.
 
 ### Compared to Other Implementation
 
