@@ -101,7 +101,7 @@ Times are medians across 31 paired process executions per revision. See
 [STOCK-COMPARISON.md](STOCK-COMPARISON.md) for confidence intervals, raw
 samples, and the reproduction protocol.
 
-### Scan Throughput
+### Nominal Input-Size Throughput
 
 | Workload | Upstream | Fork |
 |---|---:|---:|
@@ -111,8 +111,9 @@ samples, and the reproduction protocol.
 | `MatchFirst`, late match in 100 KiB | 362.39 MB/s | 19,781.19 MB/s |
 | Natural text, sorted 10k dictionary, 8 MiB | 222.04 MB/s | 961.57 MB/s |
 
-Throughput is bytes processed per second for each fixed-size scan. It is not
-an application capacity measurement.
+These rates divide each benchmark's configured input size by elapsed time.
+`MatchFirst` uses the nominal 100 KiB input even though the first match is
+around byte 99,805. These figures are not application capacity measurements.
 
 ### Allocation Traffic
 
@@ -121,13 +122,13 @@ an application capacity measurement.
 | Natural text, spread 10k dictionary, 100 KiB | 21,839 | 0 | 2 | 0 |
 | No match, spread 10k dictionary, 1 MiB | 24 | 0 | 1 | 0 |
 | Dense overlapping matches, 64 KiB | 2,039,221 | 0 | 4 | 0 |
-| `MatchFirst`, late match in 100 KiB | 37 | 48 | 1 | 1 |
 | Build 10k-pattern trie | 46,378,952 | 34,237,402 | 54,261 | 32 |
 | Natural text, sorted 10k dictionary, 8 MiB | 2,454,350 | 0 | 3 | 0 |
 
 `B/op` measures allocation traffic per operation, not retained trie memory or
-peak process memory. `MatchFirst` uses separate five-execution allocation
-checks; other rows use the 31 primary executions.
+peak process memory. `MatchFirst` is omitted because its setup ran before the
+timed loop without a timer reset, so its setup-inclusive `B/op` values are not
+comparable per-call allocation measurements.
 
 ### Compared to Other Implementation
 

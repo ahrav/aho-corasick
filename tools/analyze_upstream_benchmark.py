@@ -9,7 +9,6 @@ import platform
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import scipy
@@ -71,6 +70,7 @@ ENDPOINTS = (
 )
 
 THROUGHPUT_ENDPOINTS = ENDPOINTS[:4] + (ENDPOINTS[5],)
+ALLOCATION_ENDPOINTS = ENDPOINTS[:3] + ENDPOINTS[4:]
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,30 +94,45 @@ def normalized_benchmark_name(name: str) -> str:
 def read_metric(
     path: Path,
     benchmark: str,
-    expected: int,
+    expected_processes: int,
     metric: str,
-    expected_passes: Optional[int] = None,
+    samples_per_process: int = 1,
 ) -> np.ndarray:
+    """Read one metric while preserving process-block boundaries."""
     samples: list[float] = []
-    passes = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
+    process_samples: list[float] = []
+    processes = 0
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         if line == "PASS":
-            passes += 1
+            processes += 1
+            if len(process_samples) != samples_per_process:
+                raise ValueError(
+                    f"{path}: process block {processes} ended at line "
+                    f"{line_number} with {len(process_samples)} samples for "
+                    f"{benchmark}/{metric}; expected {samples_per_process}"
+                )
+            samples.extend(process_samples)
+            process_samples = []
+            continue
         match = BENCHMARK_LINE.match(line)
         if (
             match
             and normalized_benchmark_name(match["name"]) == benchmark
             and match[metric] is not None
         ):
-            samples.append(float(match[metric]))
+            process_samples.append(float(match[metric]))
 
-    if expected_passes is None:
-        expected_passes = expected
-    if passes != expected_passes or len(samples) != expected:
+    if process_samples:
         raise ValueError(
-            f"{path}: expected {expected_passes} PASS records and {expected} "
-            f"samples for "
-            f"{benchmark}/{metric}, found {passes} and {len(samples)}"
+            f"{path}: found {len(process_samples)} unterminated samples for "
+            f"{benchmark}/{metric}"
+        )
+    if processes != expected_processes:
+        raise ValueError(
+            f"{path}: expected {expected_processes} process blocks for "
+            f"{benchmark}/{metric}, found {processes}"
         )
     values = np.asarray(samples, dtype=np.float64)
     if np.any(values < 0) or (metric in {"ns", "throughput"} and np.any(values == 0)):
@@ -264,7 +279,7 @@ def main() -> None:
         )
 
     print()
-    print("| Workload | Upstream MB/s | Fork MB/s |")
+    print("| Workload | Upstream nominal MB/s | Fork nominal MB/s |")
     print("|---|---:|---:|")
     for endpoint in THROUGHPUT_ENDPOINTS:
         upstream = read_metric(
@@ -290,45 +305,32 @@ def main() -> None:
         "Upstream allocs/op | Fork allocs/op |"
     )
     print("|---|---:|---:|---:|---:|")
-    for endpoint in ENDPOINTS:
-        if endpoint.benchmark == "BenchmarkPubMatchFirstLate":
-            upstream_path = args.results / "matchfirst-benchmem-upstream.txt"
-            fork_path = args.results / "matchfirst-benchmem-fork.txt"
-            expected = 5
-            expected_passes = 1
-        else:
-            upstream_path = args.results / f"{endpoint.prefix}-upstream.txt"
-            fork_path = args.results / f"{endpoint.prefix}-fork.txt"
-            expected = args.expected_samples
-            expected_passes = expected
-
+    for endpoint in ALLOCATION_ENDPOINTS:
+        upstream_path = args.results / f"{endpoint.prefix}-upstream.txt"
+        fork_path = args.results / f"{endpoint.prefix}-fork.txt"
         upstream_bytes = read_metric(
             upstream_path,
             endpoint.benchmark,
-            expected,
+            args.expected_samples,
             "bytes",
-            expected_passes,
         )
         fork_bytes = read_metric(
             fork_path,
             endpoint.benchmark,
-            expected,
+            args.expected_samples,
             "bytes",
-            expected_passes,
         )
         upstream_allocs = read_metric(
             upstream_path,
             endpoint.benchmark,
-            expected,
+            args.expected_samples,
             "allocs",
-            expected_passes,
         )
         fork_allocs = read_metric(
             fork_path,
             endpoint.benchmark,
-            expected,
+            args.expected_samples,
             "allocs",
-            expected_passes,
         )
         print(
             f"| {endpoint.label} | {np.median(upstream_bytes):,.0f} "

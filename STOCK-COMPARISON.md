@@ -22,10 +22,11 @@ across the six endpoints.
 | Build 10k-pattern trie | 111.702 ms | 13.124 ms | 88.26% (88.11% to 88.41%) |
 | Natural text, sorted 10k dictionary, 8 MiB | 37.780 ms | 8.724 ms | 76.87% (76.81% to 76.92%) |
 
-The four `Match` scan endpoints reported zero allocations per operation in
-the fork and one to four upstream. `MatchFirst` reported one allocation in
-both revisions: 37 B/op upstream and 48 B/op in the fork. The 10k-pattern
-build reported 32 allocations in the fork and about 54,261 upstream.
+The reported `Match` scan rows had zero allocations per operation in the fork
+and one to four upstream. `MatchFirst` allocation traffic is omitted because
+its setup ran before the timed loop without a timer reset, making the
+setup-inclusive per-operation values non-comparable. The 10k-pattern build
+reported 32 allocations in the fork and about 54,261 upstream.
 
 These numbers describe these workloads on this machine. They are not a suite
 geomean or an end-to-end application claim.
@@ -42,7 +43,12 @@ geomean or an end-to-end application claim.
   8 MiB scan. The excluded pilot used 500 milliseconds for scans.
 - Warmup: Go's benchmark calibration ran before each reported measurement.
 - Stopping: fixed at 31 executions per revision before final collection.
-- Exclusions: none.
+- Timing exclusions: none. The setup-inclusive `MatchFirst` allocation
+  diagnostic is omitted from allocation comparisons.
+- Reproduction controls: the current runner rejects ignored checkout files
+  and clears inherited build/runtime settings before invoking Go. The archived
+  collection predates that hardening; its runner hash and recorded environment
+  identify the controls captured at collection time.
 
 A separate 10-pair pilot estimated per-execution CV. Sizing assumed a more
 conservative 5% CV, a 5% minimum detectable effect, 90% power, and

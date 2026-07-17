@@ -13,11 +13,12 @@ These files support `STOCK-COMPARISON.md`.
   build, and benchmark processes.
 - `environment.txt` and `environment-end.txt`: host, toolchain, affinity,
   hashes, and start/end load. The runner hash identifies the exact collection
-  script; the current runner includes later reproduction and logging fixes.
-- `matchfirst-benchmem-{upstream,fork}.txt`: separate five-execution
-  allocation checks for `MatchFirst`. The supplemental upstream check reused
-  the archived `upstream.test` binary after verifying its SHA-256 against
-  `environment.txt`.
+  script. The current runner additionally rejects ignored files and clears and
+  records inherited Go/runtime settings; the archived collection predates
+  those controls.
+- `matchfirst-benchmem-fork.txt`: one setup-inclusive diagnostic invocation
+  with five in-process repetitions. It is excluded from the allocation report
+  because the benchmark did not reset its timer after setup.
 - `test-fork.txt` and `test-upstream.txt`: fresh `go test -count=1 ./...`
   output from the measured revisions.
 
