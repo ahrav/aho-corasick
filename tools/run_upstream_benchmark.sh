@@ -2,15 +2,17 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 FORK_CHECKOUT UPSTREAM_CHECKOUT OUTPUT_DIR" >&2
+    echo "usage: $0 FORK_CHECKOUT UPSTREAM_CHECKOUT OUTPUT_DIR [CPU]" >&2
     exit 2
 }
 
-[[ $# -eq 3 ]] || usage
+[[ $# -ge 3 && $# -le 4 ]] || usage
 
 fork_checkout=$(realpath "$1")
 upstream_checkout=$(realpath "$2")
 output_dir=$(realpath -m "$3")
+benchmark_cpu=${4:-19}
+[[ "$benchmark_cpu" =~ ^[0-9]+$ ]] || usage
 runner_path=$(realpath "$0")
 
 fork_revision=1e0b4674b45cdb58dc7dafbf3e91d3f48027a6e3
@@ -38,8 +40,11 @@ run_controlled() {
 }
 
 run_benchmark_binary() {
-    env -i "${controlled_environment[@]}" GOMAXPROCS=1 taskset -c 19 "$@"
+    env -i "${controlled_environment[@]}" GOMAXPROCS=1 \
+        taskset -c "$benchmark_cpu" "$@"
 }
+
+run_benchmark_binary true
 
 if [[ -d "$output_dir" && -n $(ls -A "$output_dir") ]]; then
     echo "output directory is not empty: $output_dir" >&2
@@ -97,7 +102,6 @@ check_checkout() {
 
 check_checkout "$fork_checkout" "$fork_revision"
 check_checkout "$upstream_checkout" "$upstream_revision"
-run_benchmark_binary true
 
 printf '%s\tsetup\tfork\ttest\tgo test -count=1 ./...\n' \
     "$(date --iso-8601=seconds)" >>"$output_dir/commands.log"
@@ -149,12 +153,14 @@ print_hash() {
     printf 'controlled_environment='
     printf ' %q' "${controlled_environment[@]}" GOMAXPROCS=1
     printf '\n'
+    printf 'benchmark_cpu=%s\n' "$benchmark_cpu"
     printf 'fork_revision=%s\n' "$fork_revision"
     printf 'upstream_revision=%s\n' "$upstream_revision"
     printf 'loadavg='
     cat /proc/loadavg
     lscpu
-    taskset -c 19 sh -c "grep '^Cpus_allowed_list:' /proc/self/status"
+    taskset -c "$benchmark_cpu" \
+        sh -c "grep '^Cpus_allowed_list:' /proc/self/status"
     print_hash "$fork_checkout/bench_public_test.go" bench_public_test.go
     print_hash \
         "$fork_checkout/test_data/NSF-ordlisten.cleaned.txt" \

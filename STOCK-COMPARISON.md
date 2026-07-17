@@ -95,12 +95,16 @@ Prepare checkouts at the two revisions above. Add the fork's
 tools/run_upstream_benchmark.sh \
   /path/to/fork-at-1e0b467 \
   /path/to/upstream-at-b4b5728 \
-  /tmp/aho-upstream-comparison
+  /tmp/aho-upstream-comparison \
+  19
 ```
 
 The runner verifies revisions and input hashes, records the environment and
 commands, executes the excluded 10-pair pilot, then collects 31 final pairs
-without invoking the analyzer. Analyze the completed output with:
+without invoking the analyzer. The optional final argument selects one logical
+CPU and defaults to `19` for this archived run; choose an allowed CPU on other
+hosts. The runner validates and records the selected CPU. Analyze the completed
+output with:
 
 ```bash
 python3 tools/analyze_upstream_benchmark.py \
